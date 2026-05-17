@@ -86,6 +86,37 @@ extension ControlledBrowserSession: InspectablePage {
     }
 }
 
+final class ControlledEchoTaskRunner: BrowserSubagentTaskRunner {
+    func startTask(_ request: TaskTurnRequest, events: TaskTurnEventSink) throws -> RunningTask {
+        events.handleTaskEvent(.result(TaskTurnResult(
+            text: "completed: \(request.text)",
+            compactEvidence: [
+                CompactEvidence(source: request.currentURL, quote: "controlled task runner")
+            ]
+        )))
+        return CompletedRunningTask()
+    }
+}
+
+final class ControlledInPageTaskEngine: InPageTaskEngine {
+    func runTask(_ request: InPageTaskRequest) throws -> TaskTurnResult {
+        let body = Data("""
+        {"model":"configured","messages":[{"role":"user","content":\(JSONValue.string(request.text).rendered)}]}
+        """.utf8)
+        _ = try request.modelBridge.handle(ModelSchemeRequest(
+            method: "POST",
+            path: SessionModelBridge.chatCompletionsPath,
+            body: body
+        ))
+        return TaskTurnResult(
+            text: "completed: \(request.text)",
+            compactEvidence: [
+                CompactEvidence(source: request.currentURL, quote: "model-backed PageAgent task completed")
+            ]
+        )
+    }
+}
+
 let arguments = CLIArguments(raw: Array(CommandLine.arguments.dropFirst()))
 let output = StandardProtocolOutput()
 
@@ -134,11 +165,25 @@ let commandHandler = SlashCommandHandler(
     artifactWriter: LocalArtifactWriter(),
     output: output
 )
+let taskRunner: BrowserSubagentTaskRunner
+if arguments.skipsModelRequirement {
+    taskRunner = ControlledEchoTaskRunner()
+} else {
+    let configurationStore = FileModelConfigurationStore()
+    taskRunner = PageAgentTaskRunner(
+        engine: ControlledInPageTaskEngine(),
+        modelBridge: SessionModelBridge(
+            configurationStore: configurationStore,
+            httpClient: URLSessionHTTPClient()
+        )
+    )
+}
 let coordinator = SessionCoordinator(
     browser: browser,
     output: output,
     slashCommandHandler: commandHandler,
-    trace: trace
+    trace: trace,
+    taskRunner: taskRunner
 )
 
 do {

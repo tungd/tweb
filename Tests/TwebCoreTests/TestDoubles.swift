@@ -98,3 +98,37 @@ final class FakeScriptInjectingPage: ScriptInjectingPage {
         return readinessResult
     }
 }
+
+final class ImmediateTaskRunner: BrowserSubagentTaskRunner {
+    var result: TaskTurnResult
+    private(set) var startedTasks: [TaskTurnRequest] = []
+
+    init(result: TaskTurnResult) {
+        self.result = result
+    }
+
+    func startTask(_ request: TaskTurnRequest, events: TaskTurnEventSink) throws -> RunningTask {
+        startedTasks.append(request)
+        events.handleTaskEvent(.result(result))
+        return CompletedRunningTask()
+    }
+}
+
+final class FakeInPageTaskEngine: InPageTaskEngine {
+    private(set) var tasks: [String] = []
+
+    func runTask(_ request: InPageTaskRequest) throws -> TaskTurnResult {
+        tasks.append(request.text)
+        _ = try request.modelBridge.handle(ModelSchemeRequest(
+            method: "POST",
+            path: "/v1/chat/completions",
+            body: Data(#"{"model":"test-model","messages":[]}"#.utf8)
+        ))
+        return TaskTurnResult(
+            text: "done",
+            compactEvidence: [
+                CompactEvidence(source: request.currentURL, quote: "model-backed page task completed")
+            ]
+        )
+    }
+}

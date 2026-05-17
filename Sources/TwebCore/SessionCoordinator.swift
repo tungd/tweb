@@ -10,18 +10,22 @@ public final class SessionCoordinator {
     private let output: ProtocolOutput
     private let slashCommandHandler: SlashCommandHandler?
     private let trace: TraceStore?
+    private let taskRunner: BrowserSubagentTaskRunner?
     private var started = false
+    private var activeTask: RunningTask?
 
     public init(
         browser: BrowserSession,
         output: ProtocolOutput,
         slashCommandHandler: SlashCommandHandler? = nil,
-        trace: TraceStore? = nil
+        trace: TraceStore? = nil,
+        taskRunner: BrowserSubagentTaskRunner? = nil
     ) {
         self.browser = browser
         self.output = output
         self.slashCommandHandler = slashCommandHandler
         self.trace = trace
+        self.taskRunner = taskRunner
         self.browser.onEvent = { [weak self] event in
             self?.handleBrowserEvent(event)
         }
@@ -58,7 +62,24 @@ public final class SessionCoordinator {
             return .exit
         }
 
-        output.write(.error("unsupported input: \(line)"))
+        let taskText = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !taskText.isEmpty else {
+            return .continueSession
+        }
+
+        guard let taskRunner else {
+            output.write(.error("unsupported input: \(line)"))
+            return .continueSession
+        }
+
+        trace?.record(type: "task", message: taskText)
+        let handle = try taskRunner.startTask(
+            TaskTurnRequest(text: taskText, currentURL: browser.currentURL),
+            events: self
+        )
+        if activeTask !== nil {
+            activeTask = handle
+        }
         return .continueSession
     }
 
@@ -70,6 +91,27 @@ public final class SessionCoordinator {
         case .urlChanged(let url):
             trace?.record(type: "url", message: url)
             output.write(.update("url: \(url)"))
+        }
+    }
+}
+
+extension SessionCoordinator: TaskTurnEventSink {
+    public func handleTaskEvent(_ event: TaskTurnEvent) {
+        switch event {
+        case .update(let message):
+            trace?.record(type: "task-update", message: message)
+            output.write(.update(message))
+        case .needsInput(let message):
+            trace?.record(type: "needs-input", message: message)
+            output.write(.needsInput(message))
+        case .result(let result):
+            trace?.record(type: "result", message: result.text)
+            activeTask = nil
+            output.write(.result(result.protocolBody))
+        case .failed(let message):
+            trace?.record(type: "error", message: message)
+            activeTask = nil
+            output.write(.error(message))
         }
     }
 }
