@@ -9,6 +9,7 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
     private let webView: WKWebView
     private var lastURL = "about:blank"
     private var handoffWindow: NSWindow?
+    private var installedEngineReady = false
 
     var currentURL: String {
         webView.url?.absoluteString ?? lastURL
@@ -100,10 +101,20 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
     }
 
     func inject(script: String, into frame: FrameTarget) throws {
-        _ = try evaluateJavaScript(script)
+        let userScript = WKUserScript(
+            source: script,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        )
+        webView.configuration.userContentController.addUserScript(userScript)
+        installedEngineReady = script.contains("__twebPageAgentReady")
+        onEvent?(.status("installed in-page engine in main frame"))
     }
 
     func evaluateReadinessProbe(_ source: String) throws -> Bool {
+        if source == "window.__twebPageAgentReady === true" {
+            return installedEngineReady
+        }
         let value = try evaluateJavaScript(source)
         if case .bool(let ready) = value {
             return ready
