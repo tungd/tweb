@@ -35,3 +35,25 @@ final class FakeBrowserSession: BrowserSession {
         onEvent?(.status(status))
     }
 }
+
+final class FakeInspectablePage: InspectablePage {
+    var evaluationResults: [String: JSONValue] = [:]
+    var evaluatedScripts: [String] = []
+    var screenshotData = Data()
+    var screenshotRequests: [ScreenshotCaptureMode] = []
+    var html = ""
+
+    func evaluateJavaScript(_ source: String) throws -> JSONValue {
+        evaluatedScripts.append(source)
+        return evaluationResults[source] ?? .null
+    }
+
+    func captureScreenshot(mode: ScreenshotCaptureMode) throws -> Data {
+        screenshotRequests.append(mode)
+        return screenshotData
+    }
+
+    func currentHTML() throws -> String {
+        html
+    }
+}

@@ -17,11 +17,48 @@ final class ControlledBrowserSession: BrowserSession {
     func close() {}
 }
 
+extension ControlledBrowserSession: InspectablePage {
+    func evaluateJavaScript(_ source: String) throws -> JSONValue {
+        switch source.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "location.href":
+            return .string(currentURL)
+        case "document.title":
+            return .string("tweb controlled page")
+        default:
+            return .string("evaluated: \(source)")
+        }
+    }
+
+    func captureScreenshot(mode: ScreenshotCaptureMode) throws -> Data {
+        Data("controlled full-page screenshot for \(currentURL)\n".utf8)
+    }
+
+    func currentHTML() throws -> String {
+        """
+        <!doctype html>
+        <html>
+        <head><title>tweb controlled page</title></head>
+        <body data-url="\(currentURL)">controlled page</body>
+        </html>
+        """
+    }
+}
+
 let launchURL = CommandLine.arguments.dropFirst().first { !$0.hasPrefix("--") }
 let output = StandardProtocolOutput()
-let coordinator = SessionCoordinator(
-    browser: ControlledBrowserSession(),
+let browser = ControlledBrowserSession()
+let trace = TraceStore()
+let commandHandler = SlashCommandHandler(
+    page: browser,
+    trace: trace,
+    artifactWriter: LocalArtifactWriter(),
     output: output
+)
+let coordinator = SessionCoordinator(
+    browser: browser,
+    output: output,
+    slashCommandHandler: commandHandler,
+    trace: trace
 )
 
 do {
