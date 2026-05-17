@@ -34,6 +34,12 @@ final class FakeBrowserSession: BrowserSession {
     func emitStatus(_ status: String) {
         onEvent?(.status(status))
     }
+
+    static func loaded(_ url: String) -> FakeBrowserSession {
+        let session = FakeBrowserSession()
+        try? session.load(url)
+        return session
+    }
 }
 
 final class FakeInspectablePage: InspectablePage {
@@ -181,5 +187,26 @@ final class FakeManualProfileSession: ManualProfileSession {
     func open(profile: PersistentProfile, visibility: SessionVisibility) throws {
         openedProfiles.append(profile)
         self.visibility.append(visibility)
+    }
+}
+
+final class FakeHandoffController: HandoffController {
+    var revealedURLs: [String] = []
+    var visible = false
+    var returnedControl = false
+
+    func reveal(session: BrowserSession) throws -> HandoffWindowState {
+        visible = true
+        revealedURLs.append(session.currentURL)
+        return HandoffWindowState(
+            url: session.currentURL,
+            containsLiveWebView: true,
+            returnControlPlacement: .nativeWindowChrome
+        )
+    }
+
+    func returnControl() throws {
+        visible = false
+        returnedControl = true
     }
 }

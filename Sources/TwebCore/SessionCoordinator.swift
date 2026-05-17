@@ -24,6 +24,7 @@ public final class SessionCoordinator {
     private let trace: TraceStore?
     private let taskRunner: BrowserSubagentTaskRunner?
     private let engineReinstaller: EngineReinstaller?
+    private let handoffController: HandoffController?
     private var started = false
     private var activeTask: RunningTask?
     private var lifecycleState: TaskLifecycleState = .idle
@@ -48,7 +49,8 @@ public final class SessionCoordinator {
         slashCommandHandler: SlashCommandHandler? = nil,
         trace: TraceStore? = nil,
         taskRunner: BrowserSubagentTaskRunner? = nil,
-        engineReinstaller: EngineReinstaller? = nil
+        engineReinstaller: EngineReinstaller? = nil,
+        handoffController: HandoffController? = nil
     ) {
         self.browser = browser
         self.output = output
@@ -56,6 +58,7 @@ public final class SessionCoordinator {
         self.trace = trace
         self.taskRunner = taskRunner
         self.engineReinstaller = engineReinstaller
+        self.handoffController = handoffController
         self.browser.onEvent = { [weak self] event in
             self?.handleBrowserEvent(event)
         }
@@ -80,6 +83,9 @@ public final class SessionCoordinator {
             }
             if command == .interrupt {
                 return interruptCurrentTask()
+            }
+            if command == .human {
+                return revealHumanHandoff()
             }
 
             guard let slashCommandHandler else {
@@ -168,6 +174,22 @@ public final class SessionCoordinator {
         output.write(.error("interrupted current Task Turn"))
         return .continueSession
     }
+
+    private func revealHumanHandoff() -> SessionReceiveOutcome {
+        guard let handoffController else {
+            output.write(.error("Human Handoff is not available in this session"))
+            return .continueSession
+        }
+
+        do {
+            let window = try handoffController.reveal(session: browser)
+            trace?.record(type: "human-handoff", message: window.url)
+            output.write(.update("human handoff visible: \(window.url)"))
+        } catch {
+            output.write(.error("human handoff failed: \(error)"))
+        }
+        return .continueSession
+    }
 }
 
 extension SessionCoordinator: TaskTurnEventSink {
@@ -180,6 +202,12 @@ extension SessionCoordinator: TaskTurnEventSink {
             trace?.record(type: "needs-input", message: message)
             lifecycleState = .needsInput
             output.write(.needsInput(message))
+        case .requestedHumanHandoff(let message):
+            trace?.record(type: "needs-input", message: "human handoff requested: \(message)")
+            lifecycleState = .needsInput
+            output.write(.needsInput(
+                "Browser Subagent requested Human Handoff: \(message). Parent Agent must invoke /human."
+            ))
         case .result(let result):
             trace?.record(type: "result", message: result.text)
             activeTask = nil

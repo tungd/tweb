@@ -148,6 +148,18 @@ final class ControlledManualProfileSession: ManualProfileSession {
     }
 }
 
+final class ControlledHandoffController: HandoffController {
+    func reveal(session: BrowserSession) throws -> HandoffWindowState {
+        HandoffWindowState(
+            url: session.currentURL,
+            containsLiveWebView: true,
+            returnControlPlacement: .nativeWindowChrome
+        )
+    }
+
+    func returnControl() throws {}
+}
+
 let arguments = CLIArguments(raw: Array(CommandLine.arguments.dropFirst()))
 let output = StandardProtocolOutput()
 
@@ -248,7 +260,8 @@ let coordinator = SessionCoordinator(
     slashCommandHandler: commandHandler,
     trace: trace,
     taskRunner: taskRunner,
-    engineReinstaller: engineReinstaller
+    engineReinstaller: engineReinstaller,
+    handoffController: ControlledHandoffController()
 )
 
 do {

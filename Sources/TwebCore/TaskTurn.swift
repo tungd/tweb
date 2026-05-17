@@ -53,6 +53,7 @@ public struct TaskTurnResult: Equatable {
 public enum TaskTurnEvent: Equatable {
     case update(String)
     case needsInput(String)
+    case requestedHumanHandoff(String)
     case result(TaskTurnResult)
     case failed(String)
 }
