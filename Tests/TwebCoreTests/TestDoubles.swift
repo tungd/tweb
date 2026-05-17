@@ -83,3 +83,18 @@ final class FakeHTTPClient: HTTPClient {
         return response
     }
 }
+
+final class FakeScriptInjectingPage: ScriptInjectingPage {
+    var injections: [ScriptInjection] = []
+    var readinessProbes: [String] = []
+    var readinessResult = true
+
+    func inject(script: String, into frame: FrameTarget) throws {
+        injections.append(ScriptInjection(script: script, frame: frame))
+    }
+
+    func evaluateReadinessProbe(_ source: String) throws -> Bool {
+        readinessProbes.append(source)
+        return readinessResult
+    }
+}

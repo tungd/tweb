@@ -12,7 +12,12 @@ let package = Package(
         .library(name: "TwebCore", targets: ["TwebCore"])
     ],
     targets: [
-        .target(name: "TwebCore"),
+        .target(
+            name: "TwebCore",
+            resources: [
+                .process("Resources")
+            ]
+        ),
         .executableTarget(
             name: "tweb",
             dependencies: ["TwebCore"]
