@@ -30,4 +30,5 @@ None - can start immediately
 
 - Implemented a Swift Package executable/library split with a macOS 14 floor.
 - Added a hidden-session lifecycle coordinator with optional Launch URL, Ready Block, Update Blocks, and `/quit`.
+- Added the executable WebKit host path so normal sessions use a WKWebView-backed Hidden Session; deterministic tests and smoke can opt into the controlled host.
 - Added issue-focused tests for protocol output and lifecycle behavior without depending on WebKit internals.

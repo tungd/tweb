@@ -30,4 +30,5 @@ The **Native Host** should validate the request shape, read the real API token f
 - Added a Session Model Bridge for `tweb-llm://` model requests at `/v1/chat/completions`.
 - The bridge validates method/path, rejects non-model paths, loads the real token from Native Host configuration, and forwards the original OpenAI-compatible body.
 - Native auth is injected as an upstream Authorization header; the page-supplied request body never receives the token.
+- Added the executable WKURLSchemeHandler wiring for the `tweb-llm` Model Scheme.
 - Added a fakeable HTTP client boundary and tests for validation, auth forwarding, path rejection, method rejection, and response forwarding.

@@ -124,6 +124,8 @@ public final class SessionModelBridge {
     }
 }
 
+extension SessionModelBridge: @unchecked Sendable {}
+
 public final class URLSessionHTTPClient: HTTPClient {
     public init() {}
 

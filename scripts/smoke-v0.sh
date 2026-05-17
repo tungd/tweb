@@ -11,7 +11,7 @@ output="$tmpdir/tweb-smoke.out"
   printf '/trace\n'
   printf '/html %s\n' "$tmpdir/page.html"
   printf '/quit\n'
-} | .build/debug/tweb --no-model-required https://example.test/start > "$output"
+} | .build/debug/tweb --controlled --no-model-required https://example.test/start > "$output"
 
 grep -q '<ready>' "$output"
 grep -q 'url: https://example.test/start' "$output"

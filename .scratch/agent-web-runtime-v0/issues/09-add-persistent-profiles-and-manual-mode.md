@@ -30,6 +30,7 @@ Persistent Profiles are named web identities and may span domains. They should n
 
 - Added default Ephemeral Session State and named Persistent Profile selection.
 - Persistent Profiles map to stable UUID-backed WebKit website data store identities; mappings persist in a local profile registry.
+- The WebKit host selects `WKWebsiteDataStore.nonPersistent()` for ephemeral sessions and `WKWebsiteDataStore(forIdentifier:)` for Persistent Profiles.
 - Added Manual Mode with a visible session boundary for creating or updating a named profile.
 - Wired `--profile <name>` and `--manual --profile <name>` into the CLI path.
 - Added tests for ephemeral default behavior, stable/reused profile UUID mapping, mapping persistence, profile selection, and Manual Mode visibility.

@@ -29,6 +29,7 @@ The **Browser Subagent** may ask for direction through a **Needs Input Block**, 
 
 - Added a Human Handoff boundary that reveals the same live browser session state through `/human`.
 - Modeled the Handoff Window as containing the live web view plus Return Control in native window chrome.
+- Added the executable WebKit Handoff Window path using the same WKWebView instance.
 - Added Return Control behavior at the handoff boundary and wired controlled CLI `/human` support.
 - Browser Subagent handoff requests produce a Needs Input Block; they do not open Human Handoff directly.
 - Added tests for entering handoff, native Return Control placement, returning control, and preventing subagent-initiated handoff.

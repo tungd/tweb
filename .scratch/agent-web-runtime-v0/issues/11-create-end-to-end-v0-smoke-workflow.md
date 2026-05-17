@@ -32,7 +32,7 @@ This issue is about making the integrated behavior easy to verify, not adding ne
 ## Comments
 
 - Added an end-to-end smoke test covering startup, Ready Block, Task Turn result, navigation update, Trace Command, and HTML artifact writing.
-- Added `scripts/smoke-v0.sh`, which builds and starts the actual `tweb` executable over stdin/stdout with `--no-model-required`.
+- Added `scripts/smoke-v0.sh`, which builds and starts the actual `tweb` executable over stdin/stdout with `--controlled --no-model-required`.
 - The smoke workflow navigates through a controlled Task Turn, verifies `<result>`, verifies `/trace`, writes an `/html` Artifact File, and quits.
 - Added `docs/smoke-v0.md` with local run instructions.
 - Verified the script passes locally without third-party credentials.

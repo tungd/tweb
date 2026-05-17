@@ -173,4 +173,5 @@ Major modules to build:
 
 - Implemented across issues 01-12 with focused TDD slices and small logical commits.
 - Added the Swift Package executable/library, Text Protocol, session lifecycle, inspection slash commands, setup/config storage, model bridge, vendored in-page engine, task turns, lifecycle semantics, navigation reinstall, profiles/manual mode, human handoff, smoke workflow, and normalized error paths.
+- Added the executable WebKit host path with WKWebView, `tweb-llm` WKURLSchemeHandler, UUID-backed WKWebsiteDataStore selection, WebKit inspection commands, and native Handoff Window wiring. The deterministic smoke workflow uses `--controlled`.
 - Verification is covered by issue-specific XCTest suites plus `scripts/smoke-v0.sh`.

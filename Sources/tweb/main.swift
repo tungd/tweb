@@ -12,6 +12,10 @@ struct CLIArguments {
         raw.contains("--manual")
     }
 
+    var isControlled: Bool {
+        raw.contains("--controlled")
+    }
+
     var skipsModelRequirement: Bool {
         raw.contains("--no-model-required") || isManual
     }
@@ -233,10 +237,12 @@ if !arguments.skipsModelRequirement {
     }
 }
 
+let trace = TraceStore()
+let selectedStorage: SessionStorage
 do {
-    let storage = try ProfileSelector(registry: profileRegistry)
+    selectedStorage = try ProfileSelector(registry: profileRegistry)
         .storage(forProfileName: arguments.profileName)
-    switch storage {
+    switch selectedStorage {
     case .ephemeral:
         output.write(.update("session-state: ephemeral"))
     case .persistent(let profile):
@@ -247,8 +253,19 @@ do {
     exit(1)
 }
 
-let browser = ControlledBrowserSession()
-let trace = TraceStore()
+let browser: BrowserSession & InspectablePage & ScriptInjectingPage
+let webKitModelBridge: SessionModelBridge?
+if arguments.isControlled {
+    browser = ControlledBrowserSession()
+    webKitModelBridge = nil
+} else {
+    let configurationStore = FileModelConfigurationStore()
+    webKitModelBridge = SessionModelBridge(
+        configurationStore: configurationStore,
+        httpClient: URLSessionHTTPClient()
+    )
+    browser = WebKitBrowserSession(storage: selectedStorage, modelBridge: webKitModelBridge)
+}
 let commandHandler = SlashCommandHandler(
     page: browser,
     trace: trace,
@@ -279,7 +296,7 @@ let coordinator = SessionCoordinator(
     trace: trace,
     taskRunner: taskRunner,
     engineReinstaller: engineReinstaller,
-    handoffController: ControlledHandoffController()
+    handoffController: arguments.isControlled ? ControlledHandoffController() : WebKitHandoffController()
 )
 
 do {
