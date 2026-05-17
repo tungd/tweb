@@ -105,14 +105,32 @@ extension ControlledBrowserSession: ScriptInjectingPage {
 }
 
 final class ControlledEchoTaskRunner: BrowserSubagentTaskRunner {
+    private let browser: BrowserSession
+
+    init(browser: BrowserSession) {
+        self.browser = browser
+    }
+
     func startTask(_ request: TaskTurnRequest, events: TaskTurnEventSink) throws -> RunningTask {
+        if let destination = firstHTTPURL(in: request.text) {
+            try browser.load(destination)
+        }
+        let source = browser.currentURL
         events.handleTaskEvent(.result(TaskTurnResult(
             text: "completed: \(request.text)",
             compactEvidence: [
-                CompactEvidence(source: request.currentURL, quote: "controlled task runner")
+                CompactEvidence(source: source, quote: "controlled task runner")
             ]
         )))
         return CompletedRunningTask()
+    }
+
+    private func firstHTTPURL(in text: String) -> String? {
+        text
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+            .first { $0.hasPrefix("http://") || $0.hasPrefix("https://") }?
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".,)"))
     }
 }
 
@@ -243,7 +261,7 @@ let engineReinstaller = try? MainFrameEngineReinstaller(
 )
 let taskRunner: BrowserSubagentTaskRunner
 if arguments.skipsModelRequirement {
-    taskRunner = ControlledEchoTaskRunner()
+    taskRunner = ControlledEchoTaskRunner(browser: browser)
 } else {
     let configurationStore = FileModelConfigurationStore()
     taskRunner = PageAgentTaskRunner(

@@ -49,6 +49,13 @@ final class FakeInspectablePage: InspectablePage {
     var screenshotRequests: [ScreenshotCaptureMode] = []
     var html = ""
 
+    convenience init(html: String) {
+        self.init()
+        self.html = html
+    }
+
+    init() {}
+
     func evaluateJavaScript(_ source: String) throws -> JSONValue {
         evaluatedScripts.append(source)
         return evaluationResults[source] ?? .null
@@ -208,5 +215,26 @@ final class FakeHandoffController: HandoffController {
     func returnControl() throws {
         visible = false
         returnedControl = true
+    }
+}
+
+final class NavigatingTaskRunner: BrowserSubagentTaskRunner {
+    private let browser: BrowserSession
+    private let destination: String
+
+    init(browser: BrowserSession, destination: String) {
+        self.browser = browser
+        self.destination = destination
+    }
+
+    func startTask(_ request: TaskTurnRequest, events: TaskTurnEventSink) throws -> RunningTask {
+        try browser.load(destination)
+        events.handleTaskEvent(.result(TaskTurnResult(
+            text: "navigated summary",
+            compactEvidence: [
+                CompactEvidence(source: destination, quote: "next")
+            ]
+        )))
+        return CompletedRunningTask()
     }
 }
