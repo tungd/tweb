@@ -69,3 +69,17 @@ final class FakeSecretStore: SecretStore {
         tokens[key]
     }
 }
+
+final class FakeHTTPClient: HTTPClient {
+    var response: HTTPResponse
+    private(set) var requests: [HTTPRequest] = []
+
+    init(response: HTTPResponse = HTTPResponse(statusCode: 200, body: Data(#"{"ok":true}"#.utf8))) {
+        self.response = response
+    }
+
+    func send(_ request: HTTPRequest) throws -> HTTPResponse {
+        requests.append(request)
+        return response
+    }
+}
