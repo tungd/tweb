@@ -16,8 +16,8 @@ struct CLIArguments {
         raw.contains("--controlled")
     }
 
-    var skipsModelRequirement: Bool {
-        raw.contains("--no-model-required") || isManual
+    var requiresModelConfiguration: Bool {
+        !isControlled && !isManual
     }
 
     var profileName: String? {
@@ -138,22 +138,17 @@ final class ControlledEchoTaskRunner: BrowserSubagentTaskRunner {
     }
 }
 
-final class ControlledInPageTaskEngine: InPageTaskEngine {
-    func runTask(_ request: InPageTaskRequest) throws -> TaskTurnResult {
-        let body = Data("""
-        {"model":"configured","messages":[{"role":"user","content":\(JSONValue.string(request.text).rendered)}]}
-        """.utf8)
-        _ = try request.modelBridge.handle(ModelSchemeRequest(
-            method: "POST",
-            path: SessionModelBridge.chatCompletionsPath,
-            body: body
-        ))
-        return TaskTurnResult(
-            text: "completed: \(request.text)",
-            compactEvidence: [
-                CompactEvidence(source: request.currentURL, quote: "model-backed PageAgent task completed")
-            ]
-        )
+extension ControlledBrowserSession: PageAgentScriptPage {
+    func callAsyncJavaScript(_ source: String, arguments: [String: String]) throws -> JSONValue {
+        .object([
+            "text": .string("controlled PageAgent executed: \(arguments["task"] ?? "")"),
+            "compactEvidence": .array([
+                .object([
+                    "source": .string(currentURL),
+                    "quote": .string("controlled PageAgent task runner")
+                ])
+            ])
+        ])
     }
 }
 
@@ -180,6 +175,96 @@ final class ControlledHandoffController: HandoffController {
     }
 
     func returnControl() throws {}
+}
+
+final class StandardInputSessionDriver: @unchecked Sendable {
+    private let coordinator: SessionCoordinator
+    private let output: ProtocolOutput
+    private let pollInterval: TimeInterval
+    private let lock = NSLock()
+    private var inputClosed = false
+    private var exitRequested = false
+    private var exitCode = 0
+
+    init(
+        coordinator: SessionCoordinator,
+        output: ProtocolOutput,
+        pollInterval: TimeInterval = 0.02
+    ) {
+        self.coordinator = coordinator
+        self.output = output
+        self.pollInterval = pollInterval
+    }
+
+    func run() -> Int {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            while let line = readLine() {
+                guard let self, !self.isExitRequested else { break }
+                DispatchQueue.main.async { [weak self] in
+                    self?.receive(line)
+                }
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.inputDidClose()
+            }
+        }
+
+        while !isExitRequested {
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: pollInterval))
+            if shouldExitAfterInputClosed {
+                requestExit(code: 0)
+            }
+        }
+        return currentExitCode
+    }
+
+    private func receive(_ line: String) {
+        guard !isExitRequested else { return }
+
+        do {
+            if try coordinator.receiveLine(line) == .exit {
+                requestExit(code: 0)
+            }
+        } catch {
+            output.write(.fatal(String(describing: error)))
+            requestExit(code: 1)
+        }
+    }
+
+    private func inputDidClose() {
+        lock.lock()
+        inputClosed = true
+        lock.unlock()
+    }
+
+    private var shouldExitAfterInputClosed: Bool {
+        lock.lock()
+        let closed = inputClosed
+        lock.unlock()
+        guard closed else { return false }
+        return coordinator.debugState.lifecycleState != .running
+    }
+
+    private var isExitRequested: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return exitRequested
+    }
+
+    private var currentExitCode: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return exitCode
+    }
+
+    private func requestExit(code: Int) {
+        lock.lock()
+        if !exitRequested {
+            exitCode = code
+            exitRequested = true
+        }
+        lock.unlock()
+    }
 }
 
 let arguments = CLIArguments(raw: Array(CommandLine.arguments.dropFirst()))
@@ -222,19 +307,22 @@ if arguments.isManual {
     }
 }
 
-if !arguments.skipsModelRequirement {
+let configuredModel: ModelConfiguration?
+let fileModelConfigurationStore = FileModelConfigurationStore()
+if arguments.requiresModelConfiguration {
     do {
-        let ready = try ModelConfigurationGate(
-            configurationStore: FileModelConfigurationStore(),
-            output: output
-        ).ensureReadyForModelBackedSession()
-        if !ready {
+        guard let configuration = try fileModelConfigurationStore.load() else {
+            let missing = try fileModelConfigurationStore.missingRequirements().joined(separator: ", ")
+            output.write(.fatal("missing model configuration: \(missing)"))
             exit(1)
         }
+        configuredModel = configuration
     } catch {
         output.write(.fatal(String(describing: error)))
         exit(1)
     }
+} else {
+    configuredModel = nil
 }
 
 let trace = TraceStore()
@@ -253,17 +341,18 @@ do {
     exit(1)
 }
 
-let browser: BrowserSession & InspectablePage & ScriptInjectingPage
+let browser: BrowserSession & InspectablePage & ScriptInjectingPage & PageAgentScriptPage
 let webKitModelBridge: SessionModelBridge?
 if arguments.isControlled {
     browser = ControlledBrowserSession()
     webKitModelBridge = nil
 } else {
-    let configurationStore = FileModelConfigurationStore()
-    webKitModelBridge = SessionModelBridge(
-        configurationStore: configurationStore,
-        httpClient: URLSessionHTTPClient()
-    )
+    webKitModelBridge = configuredModel.map {
+        SessionModelBridge(
+            configurationStore: InMemoryModelConfigurationStore(configuration: $0),
+            httpClient: URLSessionHTTPClient()
+        )
+    }
     browser = WebKitBrowserSession(storage: selectedStorage, modelBridge: webKitModelBridge)
 }
 let commandHandler = SlashCommandHandler(
@@ -272,21 +361,26 @@ let commandHandler = SlashCommandHandler(
     artifactWriter: LocalArtifactWriter(),
     output: output
 )
-let engineReinstaller = try? MainFrameEngineReinstaller(
-    page: browser,
-    bundle: PageAgentBundle.vendored()
-)
+let engineReinstaller: EngineReinstaller?
+if arguments.isControlled {
+    engineReinstaller = nil
+} else {
+    engineReinstaller = try? MainFrameEngineReinstaller(
+        page: browser,
+        bundle: PageAgentBundle.pinnedCDNLoader()
+    )
+}
 let taskRunner: BrowserSubagentTaskRunner
-if arguments.skipsModelRequirement {
+if arguments.isControlled {
     taskRunner = ControlledEchoTaskRunner(browser: browser)
 } else {
-    let configurationStore = FileModelConfigurationStore()
+    guard let webKitModelBridge else {
+        output.write(.fatal("missing model configuration"))
+        exit(1)
+    }
     taskRunner = PageAgentTaskRunner(
-        engine: ControlledInPageTaskEngine(),
-        modelBridge: SessionModelBridge(
-            configurationStore: configurationStore,
-            httpClient: URLSessionHTTPClient()
-        )
+        engine: PageAgentJavaScriptTaskEngine(page: browser),
+        modelBridge: webKitModelBridge
     )
 }
 let coordinator = SessionCoordinator(
@@ -301,10 +395,13 @@ let coordinator = SessionCoordinator(
 
 do {
     try coordinator.start(launchURL: arguments.launchURL)
-    while let line = readLine() {
-        if try coordinator.receiveLine(line) == .exit {
-            break
-        }
+    let driver = StandardInputSessionDriver(
+        coordinator: coordinator,
+        output: output
+    )
+    let exitCode = driver.run()
+    if exitCode != 0 {
+        exit(Int32(exitCode))
     }
 } catch {
     output.write(.fatal(String(describing: error)))

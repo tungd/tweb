@@ -2,10 +2,19 @@ import Foundation
 @testable import TwebCore
 
 final class RecordingProtocolOutput: ProtocolOutput {
-    private(set) var renderedBlocks: [String] = []
+    private let lock = NSLock()
+    private var blocks: [String] = []
+
+    var renderedBlocks: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return blocks
+    }
 
     func write(_ block: ProtocolBlock) {
-        renderedBlocks.append(TextProtocolRenderer.render(block))
+        lock.lock()
+        blocks.append(TextProtocolRenderer.render(block))
+        lock.unlock()
     }
 }
 
@@ -79,28 +88,49 @@ final class FakeInspectablePage: InspectablePage {
     }
 }
 
-final class FakeSecretStore: SecretStore {
-    var tokens: [String: String] = [:]
-
-    func saveSecret(_ value: String, forKey key: String) throws {
-        tokens[key] = value
+final class FakePageAgentScriptPage: PageAgentScriptPage {
+    struct Call: Equatable {
+        let source: String
+        let arguments: [String: String]
     }
 
-    func readSecret(forKey key: String) throws -> String? {
-        tokens[key]
+    private let lock = NSLock()
+    var result: JSONValue = .null
+    private var recordedCalls: [Call] = []
+
+    var calls: [Call] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedCalls
+    }
+
+    func callAsyncJavaScript(_ source: String, arguments: [String: String]) throws -> JSONValue {
+        lock.lock()
+        recordedCalls.append(Call(source: source, arguments: arguments))
+        lock.unlock()
+        return result
     }
 }
 
 final class FakeHTTPClient: HTTPClient {
+    private let lock = NSLock()
     var response: HTTPResponse
-    private(set) var requests: [HTTPRequest] = []
+    private var recordedRequests: [HTTPRequest] = []
+
+    var requests: [HTTPRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedRequests
+    }
 
     init(response: HTTPResponse = HTTPResponse(statusCode: 200, body: Data(#"{"ok":true}"#.utf8))) {
         self.response = response
     }
 
     func send(_ request: HTTPRequest) throws -> HTTPResponse {
-        requests.append(request)
+        lock.lock()
+        recordedRequests.append(request)
+        lock.unlock()
         return response
     }
 }
@@ -136,10 +166,19 @@ final class ImmediateTaskRunner: BrowserSubagentTaskRunner {
 }
 
 final class FakeInPageTaskEngine: InPageTaskEngine {
-    private(set) var tasks: [String] = []
+    private let lock = NSLock()
+    private var recordedTasks: [String] = []
+
+    var tasks: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedTasks
+    }
 
     func runTask(_ request: InPageTaskRequest) throws -> TaskTurnResult {
-        tasks.append(request.text)
+        lock.lock()
+        recordedTasks.append(request.text)
+        lock.unlock()
         _ = try request.modelBridge.handle(ModelSchemeRequest(
             method: "POST",
             path: "/v1/chat/completions",
@@ -193,6 +232,60 @@ final class FakeEngineReinstaller: EngineReinstaller {
             throw error
         }
     }
+}
+
+final class BlockingInPageTaskEngine: InterruptibleInPageTaskEngine {
+    private let startedSemaphore = DispatchSemaphore(value: 0)
+    private let finishSemaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var interruptedFlag = false
+    var modelRequestsBeforeBlocking = 1
+
+    var interrupted: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return interruptedFlag
+    }
+
+    func runTask(_ request: InPageTaskRequest) throws -> TaskTurnResult {
+        startedSemaphore.signal()
+        for _ in 0..<modelRequestsBeforeBlocking {
+            _ = try request.modelBridge.handle(ModelSchemeRequest(
+                method: "POST",
+                path: "/v1/chat/completions",
+                body: Data(#"{"model":"test-model","messages":[]}"#.utf8)
+            ))
+        }
+        _ = finishSemaphore.wait(timeout: .now() + 2)
+        return TaskTurnResult(text: "unblocked", compactEvidence: [])
+    }
+
+    func interruptTask() {
+        lock.lock()
+        interruptedFlag = true
+        lock.unlock()
+        finishSemaphore.signal()
+    }
+
+    func waitUntilStarted(timeout: TimeInterval = 1) -> Bool {
+        startedSemaphore.wait(timeout: .now() + timeout) == .success
+    }
+
+    func finish() {
+        finishSemaphore.signal()
+    }
+}
+
+@discardableResult
+func waitUntil(timeout: TimeInterval = 1, _ condition: () -> Bool) -> Bool {
+    let deadline = Date(timeIntervalSinceNow: timeout)
+    while Date() < deadline {
+        if condition() {
+            return true
+        }
+        RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+    }
+    return condition()
 }
 
 final class FakeManualProfileSession: ManualProfileSession {

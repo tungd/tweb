@@ -46,12 +46,15 @@ public protocol ProtocolOutput: AnyObject {
 
 public final class StandardProtocolOutput: ProtocolOutput {
     private let writeString: (String) -> Void
+    private let lock = NSLock()
 
     public init(writeString: @escaping (String) -> Void = { print($0, terminator: "") }) {
         self.writeString = writeString
     }
 
     public func write(_ block: ProtocolBlock) {
+        lock.lock()
+        defer { lock.unlock() }
         writeString(TextProtocolRenderer.render(block))
     }
 }

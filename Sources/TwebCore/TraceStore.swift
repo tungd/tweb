@@ -11,19 +11,26 @@ public struct TraceEvent: Equatable {
 }
 
 public final class TraceStore {
+    private let lock = NSLock()
     private var events: [TraceEvent] = []
 
     public init() {}
 
     public func record(type: String, message: String) {
+        lock.lock()
+        defer { lock.unlock() }
         events.append(TraceEvent(type: type, message: message))
     }
 
     public func snapshot() -> [TraceEvent] {
-        events
+        lock.lock()
+        defer { lock.unlock() }
+        return events
     }
 
     public func renderJSON() -> String {
+        lock.lock()
+        defer { lock.unlock() }
         let renderedEvents = events.map { event in
             "{\(quote("message")):\(quote(event.message)),\(quote("type")):\(quote(event.type))}"
         }
