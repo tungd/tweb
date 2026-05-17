@@ -132,3 +132,32 @@ final class FakeInPageTaskEngine: InPageTaskEngine {
         )
     }
 }
+
+final class ManualTaskRunner: BrowserSubagentTaskRunner {
+    private(set) var startedTasks: [TaskTurnRequest] = []
+    let handle = RecordingRunningTask()
+    private weak var events: TaskTurnEventSink?
+
+    func startTask(_ request: TaskTurnRequest, events: TaskTurnEventSink) throws -> RunningTask {
+        startedTasks.append(request)
+        self.events = events
+        return handle
+    }
+
+    func emit(_ event: TaskTurnEvent) {
+        events?.handleTaskEvent(event)
+    }
+}
+
+final class RecordingRunningTask: RunningTask {
+    private(set) var steering: [String] = []
+    private(set) var interrupted = false
+
+    func provideSteering(_ text: String) {
+        steering.append(text)
+    }
+
+    func interrupt() {
+        interrupted = true
+    }
+}

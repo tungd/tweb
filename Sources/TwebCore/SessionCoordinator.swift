@@ -5,6 +5,18 @@ public enum SessionReceiveOutcome: Equatable {
     case exit
 }
 
+public enum TaskLifecycleState: Equatable {
+    case idle
+    case running
+    case needsInput
+}
+
+public struct SessionDebugState: Equatable {
+    public let lifecycleState: TaskLifecycleState
+    public let queuedSteering: [String]
+    public let turnMemoryCount: Int
+}
+
 public final class SessionCoordinator {
     private let browser: BrowserSession
     private let output: ProtocolOutput
@@ -13,6 +25,17 @@ public final class SessionCoordinator {
     private let taskRunner: BrowserSubagentTaskRunner?
     private var started = false
     private var activeTask: RunningTask?
+    private var lifecycleState: TaskLifecycleState = .idle
+    private var queuedSteering: [String] = []
+    private var turnMemory: [String] = []
+
+    public var debugState: SessionDebugState {
+        SessionDebugState(
+            lifecycleState: lifecycleState,
+            queuedSteering: queuedSteering,
+            turnMemoryCount: turnMemory.count
+        )
+    }
 
     public init(
         browser: BrowserSession,
@@ -48,6 +71,9 @@ public final class SessionCoordinator {
                 browser.close()
                 return .exit
             }
+            if command == .interrupt {
+                return interruptCurrentTask()
+            }
 
             guard let slashCommandHandler else {
                 output.write(.error("unsupported command in this session"))
@@ -57,13 +83,26 @@ public final class SessionCoordinator {
             return try slashCommandHandler.handle(command)
         }
 
-        if line.trimmingCharacters(in: .whitespacesAndNewlines) == "/quit" {
-            browser.close()
-            return .exit
-        }
-
         let taskText = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !taskText.isEmpty else {
+            return .continueSession
+        }
+
+        if lifecycleState == .running {
+            activeTask?.provideSteering(taskText)
+            queuedSteering.append(taskText)
+            turnMemory.append(taskText)
+            trace?.record(type: "queued-steering", message: taskText)
+            output.write(.update("queued steering: \(taskText)"))
+            return .continueSession
+        }
+
+        if lifecycleState == .needsInput {
+            activeTask?.provideSteering(taskText)
+            turnMemory.append(taskText)
+            lifecycleState = .running
+            trace?.record(type: "steering", message: taskText)
+            output.write(.update("steering received"))
             return .continueSession
         }
 
@@ -73,14 +112,21 @@ public final class SessionCoordinator {
         }
 
         trace?.record(type: "task", message: taskText)
+        lifecycleState = .running
+        queuedSteering = []
+        turnMemory = [taskText]
         let handle = try taskRunner.startTask(
             TaskTurnRequest(text: taskText, currentURL: browser.currentURL),
             events: self
         )
-        if activeTask !== nil {
+        if lifecycleState != .idle {
             activeTask = handle
         }
         return .continueSession
+    }
+
+    public func semanticSessionMemorySnapshot() -> [String] {
+        []
     }
 
     private func handleBrowserEvent(_ event: BrowserEvent) {
@@ -93,6 +139,22 @@ public final class SessionCoordinator {
             output.write(.update("url: \(url)"))
         }
     }
+
+    private func interruptCurrentTask() -> SessionReceiveOutcome {
+        guard let activeTask else {
+            output.write(.error("no active Task Turn to interrupt"))
+            return .continueSession
+        }
+
+        activeTask.interrupt()
+        self.activeTask = nil
+        lifecycleState = .idle
+        queuedSteering = []
+        turnMemory = []
+        trace?.record(type: "interrupt", message: "current Task Turn interrupted")
+        output.write(.error("interrupted current Task Turn"))
+        return .continueSession
+    }
 }
 
 extension SessionCoordinator: TaskTurnEventSink {
@@ -103,14 +165,21 @@ extension SessionCoordinator: TaskTurnEventSink {
             output.write(.update(message))
         case .needsInput(let message):
             trace?.record(type: "needs-input", message: message)
+            lifecycleState = .needsInput
             output.write(.needsInput(message))
         case .result(let result):
             trace?.record(type: "result", message: result.text)
             activeTask = nil
+            lifecycleState = .idle
+            queuedSteering = []
+            turnMemory = []
             output.write(.result(result.protocolBody))
         case .failed(let message):
             trace?.record(type: "error", message: message)
             activeTask = nil
+            lifecycleState = .idle
+            queuedSteering = []
+            turnMemory = []
             output.write(.error(message))
         }
     }
