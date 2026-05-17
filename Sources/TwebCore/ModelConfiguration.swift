@@ -4,17 +4,30 @@ public struct ModelConfiguration: Equatable {
     public let baseURL: URL
     public let modelName: String
     public let apiToken: String
+    public let requestOptions: [String: JSONValue]
 
-    public init(baseURL: URL, modelName: String, apiToken: String) {
+    public static let lowLatencyRequestOptions: [String: JSONValue] = [
+        "reasoning_effort": .string("low"),
+        "chat_template_kwargs": .object([
+            "enable_thinking": .bool(false),
+            "clear_thinking": .bool(true)
+        ])
+    ]
+
+    public init(
+        baseURL: URL,
+        modelName: String,
+        apiToken: String,
+        requestOptions: [String: JSONValue] = [:]
+    ) {
         self.baseURL = baseURL
         self.modelName = modelName
         self.apiToken = apiToken
+        self.requestOptions = requestOptions
     }
 }
 
 public enum ModelConfigurationStoreDefaults {
-    public static let apiTokenKey = "tweb.model.apiToken"
-
     public static var defaultConfigFileURL: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home
@@ -34,19 +47,18 @@ public final class FileModelConfigurationStore: ModelConfigurationStore {
     private struct StoredConfiguration: Codable {
         let baseURL: String
         let modelName: String
+        let apiToken: String?
+        let requestOptions: [String: JSONValue]?
     }
 
     private let configFileURL: URL
-    private let secretStore: SecretStore
     private let fileManager: FileManager
 
     public init(
         configFileURL: URL = ModelConfigurationStoreDefaults.defaultConfigFileURL,
-        secretStore: SecretStore = KeychainSecretStore(),
         fileManager: FileManager = .default
     ) {
         self.configFileURL = configFileURL
-        self.secretStore = secretStore
         self.fileManager = fileManager
     }
 
@@ -57,16 +69,14 @@ public final class FileModelConfigurationStore: ModelConfigurationStore {
         )
         let stored = StoredConfiguration(
             baseURL: configuration.baseURL.absoluteString,
-            modelName: configuration.modelName
+            modelName: configuration.modelName,
+            apiToken: configuration.apiToken,
+            requestOptions: configuration.requestOptions.isEmpty ? nil : configuration.requestOptions
         )
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.withoutEscapingSlashes]
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(stored)
         try data.write(to: configFileURL)
-        try secretStore.saveSecret(
-            configuration.apiToken,
-            forKey: ModelConfigurationStoreDefaults.apiTokenKey
-        )
     }
 
     public func load() throws -> ModelConfiguration? {
@@ -80,9 +90,9 @@ public final class FileModelConfigurationStore: ModelConfigurationStore {
         )
         guard
             let baseURL = URL(string: stored.baseURL),
-            let token = try secretStore.readSecret(forKey: ModelConfigurationStoreDefaults.apiTokenKey),
             !stored.modelName.isEmpty,
-            !token.isEmpty
+            let apiToken = stored.apiToken,
+            !apiToken.isEmpty
         else {
             return nil
         }
@@ -90,7 +100,8 @@ public final class FileModelConfigurationStore: ModelConfigurationStore {
         return ModelConfiguration(
             baseURL: baseURL,
             modelName: stored.modelName,
-            apiToken: token
+            apiToken: apiToken,
+            requestOptions: stored.requestOptions ?? [:]
         )
     }
 
@@ -109,8 +120,7 @@ public final class FileModelConfigurationStore: ModelConfigurationStore {
         if stored.modelName.isEmpty {
             missing.append("model name")
         }
-        let token = try secretStore.readSecret(forKey: ModelConfigurationStoreDefaults.apiTokenKey)
-        if token?.isEmpty ?? true {
+        if stored.apiToken?.isEmpty ?? true {
             missing.append("API token")
         }
         return missing
@@ -164,11 +174,17 @@ public final class SetupMode {
         self.configurationStore = configurationStore
     }
 
-    public func save(baseURL: URL, modelName: String, apiToken: String) throws {
+    public func save(
+        baseURL: URL,
+        modelName: String,
+        apiToken: String,
+        requestOptions: [String: JSONValue] = ModelConfiguration.lowLatencyRequestOptions
+    ) throws {
         try configurationStore.save(ModelConfiguration(
             baseURL: baseURL,
             modelName: modelName,
-            apiToken: apiToken
+            apiToken: apiToken,
+            requestOptions: requestOptions
         ))
     }
 }
