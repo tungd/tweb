@@ -16,29 +16,53 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
     private static let nativeModelPrompt = "__tweb_model_request__"
 
     var currentURL: String {
-        webView.url?.absoluteString ?? lastURL
+        runOnMain { currentURLOnMain }
     }
 
     init(storage: SessionStorage, modelBridge: SessionModelBridge?) {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = Self.websiteDataStore(for: storage)
         self.modelBridge = modelBridge
-        self.webView = WKWebView(
+        if Thread.isMainThread {
+            self.webView = MainActor.assumeIsolated {
+                Self.makeWebView(storage: storage)
+            }
+        } else {
+            self.webView = DispatchQueue.main.sync {
+                MainActor.assumeIsolated {
+                    Self.makeWebView(storage: storage)
+                }
+            }
+        }
+        super.init()
+        runOnMainVoid {
+            webView.navigationDelegate = self
+            webView.uiDelegate = self
+        }
+    }
+
+    @MainActor
+    private static func makeWebView(storage: SessionStorage) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = websiteDataStore(for: storage)
+        return WKWebView(
             frame: CGRect(x: 0, y: 0, width: 1280, height: 900),
             configuration: configuration
         )
-        super.init()
-        webView.navigationDelegate = self
-        webView.uiDelegate = self
     }
 
     func startHidden() throws {
-        _ = NSApplication.shared
-        NSApp.setActivationPolicy(.accessory)
-        onEvent?(.status("hidden session started"))
+        runOnMain {
+            _ = NSApplication.shared
+            NSApp.setActivationPolicy(.accessory)
+            onEvent?(.status("hidden session started"))
+        }
     }
 
     func load(_ url: String) throws {
+        try runOnMain { try loadOnMain(url) }
+    }
+
+    @MainActor
+    private func loadOnMain(_ url: String) throws {
         lastURL = url
         if url == "about:blank" {
             onEvent?(.urlChanged(url))
@@ -62,39 +86,51 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
                 throw pendingLoadError
             }
         }
-        lastURL = currentURL
-        onEvent?(.urlChanged(currentURL))
+        lastURL = currentURLOnMain
+        onEvent?(.urlChanged(currentURLOnMain))
     }
 
     func close() {
+        runOnMain { closeOnMain() }
+    }
+
+    @MainActor
+    private func closeOnMain() {
         handoffWindow?.close()
         handoffWindow = nil
         webView.stopLoading()
     }
 
     func evaluateJavaScript(_ source: String) throws -> JSONValue {
+        try runOnMain {
+            try evaluateJavaScriptOnMain(
+                """
+                (() => {
+                  const render = (value) => {
+                    if (value === undefined) {
+                      return "null";
+                    }
+                    try {
+                      const encoded = JSON.stringify(value);
+                      if (encoded !== undefined) {
+                        return encoded;
+                      }
+                    } catch (_) {}
+                    return JSON.stringify(String(value));
+                  };
+                  return render((
+                \(source)
+                  ));
+                })()
+                """
+            )
+        }
+    }
+
+    @MainActor
+    private func evaluateJavaScriptOnMain(_ source: String) throws -> JSONValue {
         let box = WebKitResultBox<Any?>()
-        webView.evaluateJavaScript(
-            """
-            (() => {
-              const render = (value) => {
-                if (value === undefined) {
-                  return "null";
-                }
-                try {
-                  const encoded = JSON.stringify(value);
-                  if (encoded !== undefined) {
-                    return encoded;
-                  }
-                } catch (_) {}
-                return JSON.stringify(String(value));
-              };
-              return render((
-            \(source)
-              ));
-            })()
-            """
-        ) { value, error in
+        webView.evaluateJavaScript(source) { value, error in
             if let error {
                 box.result = .failure(error)
             } else {
@@ -114,12 +150,12 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
     }
 
     func callAsyncJavaScript(_ source: String, arguments: [String: String]) throws -> JSONValue {
-        if Thread.isMainThread {
-            return try callAsyncJavaScriptOnMain(source, arguments: arguments, timeout: nil)
+        try runOnMain {
+            try callAsyncJavaScriptOnMain(source, arguments: arguments, timeout: nil)
         }
-        return try callAsyncJavaScriptOffMain(source, arguments: arguments, timeout: nil)
     }
 
+    @MainActor
     private func callAsyncJavaScriptOnMain(
         _ source: String,
         arguments: [String: String],
@@ -145,43 +181,14 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
         return try Self.jsonValue(from: box.result!.get())
     }
 
-    private func callAsyncJavaScriptOffMain(
-        _ source: String,
-        arguments: [String: String],
-        timeout: TimeInterval?
-    ) throws -> JSONValue {
-        let box = WebKitResultBox<Any?>()
-        let semaphore = DispatchSemaphore(value: 0)
-
-        DispatchQueue.main.async { [self] in
-            webView.callAsyncJavaScript(
-                source,
-                arguments: arguments,
-                in: nil,
-                in: .page
-            ) { result in
-                switch result {
-                case .success(let value):
-                    box.result = .success(value)
-                case .failure(let error):
-                    box.result = .failure(error)
-                }
-                semaphore.signal()
-            }
+    func captureScreenshot(mode: ScreenshotCaptureMode) throws -> Data {
+        try runOnMain {
+            try captureScreenshotOnMain(mode: mode)
         }
-
-        if let timeout {
-            guard semaphore.wait(timeout: .now() + timeout) == .success else {
-                throw SessionRuntimeError.unusable("timed out evaluating JavaScript")
-            }
-        } else {
-            semaphore.wait()
-        }
-
-        return try Self.jsonValue(from: box.result!.get())
     }
 
-    func captureScreenshot(mode: ScreenshotCaptureMode) throws -> Data {
+    @MainActor
+    private func captureScreenshotOnMain(mode: ScreenshotCaptureMode) throws -> Data {
         let configuration = WKSnapshotConfiguration()
         configuration.rect = webView.bounds
         let box = WebKitResultBox<NSImage>()
@@ -213,6 +220,11 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
     }
 
     func inject(script: String, into frame: FrameTarget) throws {
+        try runOnMain { try injectOnMain(script: script, into: frame) }
+    }
+
+    @MainActor
+    private func injectOnMain(script: String, into frame: FrameTarget) throws {
         let userScript = WKUserScript(
             source: script,
             injectionTime: .atDocumentEnd,
@@ -221,12 +233,17 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
         if registeredEngineScript != script {
             webView.configuration.userContentController.addUserScript(userScript)
             registeredEngineScript = script
-            try reloadForRegisteredUserScript()
+            try reloadForRegisteredUserScriptOnMain()
         }
         onEvent?(.status("installed in-page engine in main frame"))
     }
 
     func evaluateReadinessProbe(_ source: String) throws -> Bool {
+        try runOnMain { try evaluateReadinessProbeOnMain(source) }
+    }
+
+    @MainActor
+    private func evaluateReadinessProbeOnMain(_ source: String) throws -> Bool {
         let box = WebKitResultBox<Any?>()
         webView.evaluateJavaScript("Boolean(\(source))") { value, error in
             if let error {
@@ -240,6 +257,11 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
     }
 
     func revealHandoffWindow() -> HandoffWindowState {
+        runOnMain { revealHandoffWindowOnMain() }
+    }
+
+    @MainActor
+    private func revealHandoffWindowOnMain() -> HandoffWindowState {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 940),
             styleMask: [.titled, .closable, .resizable],
@@ -248,7 +270,11 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
         )
         window.title = "tweb Human Handoff"
 
-        let button = NSButton(title: "Return Control", target: self, action: #selector(returnControlAction))
+        let button = NSButton(
+            title: "Return Control",
+            target: self,
+            action: #selector(returnControlAction)
+        )
         let stack = NSStackView(views: [webView, button])
         stack.orientation = .vertical
         stack.distribution = .fill
@@ -258,20 +284,26 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
         handoffWindow = window
 
         return HandoffWindowState(
-            url: currentURL,
+            url: currentURLOnMain,
             containsLiveWebView: true,
             returnControlPlacement: .nativeWindowChrome
         )
     }
 
     func returnControl() {
+        runOnMain { returnControlOnMain() }
+    }
+
+    @MainActor
+    private func returnControlOnMain() {
         handoffWindow?.orderOut(nil)
     }
 
-    @objc private func returnControlAction() {
-        returnControl()
+    @MainActor @objc private func returnControlAction() {
+        returnControlOnMain()
     }
 
+    @MainActor
     private static func websiteDataStore(for storage: SessionStorage) -> WKWebsiteDataStore {
         switch storage {
         case .ephemeral:
@@ -358,10 +390,11 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
         return nativeModelPromptResponse(status: 599, body: body)
     }
 
-    private func reloadForRegisteredUserScript() throws {
+    @MainActor
+    private func reloadForRegisteredUserScriptOnMain() throws {
         pendingLoadError = nil
         let navigation: WKNavigation?
-        if webView.url == nil || currentURL == "about:blank" {
+        if webView.url == nil || currentURLOnMain == "about:blank" {
             navigation = webView.loadHTMLString("<!doctype html><title>about:blank</title>", baseURL: nil)
         } else {
             navigation = webView.reload()
@@ -391,43 +424,86 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
         }
         return true
     }
+
+    private func runOnMain<T: Sendable>(_ body: @MainActor () -> T) -> T {
+        if Thread.isMainThread {
+            return MainActor.assumeIsolated(body)
+        }
+        return DispatchQueue.main.sync {
+            MainActor.assumeIsolated(body)
+        }
+    }
+
+    private func runOnMainVoid(_ body: @MainActor () -> Void) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated(body)
+        } else {
+            DispatchQueue.main.sync { MainActor.assumeIsolated(body) }
+        }
+    }
+
+    private func runOnMain<T: Sendable>(_ body: @MainActor () throws -> T) throws -> T {
+        if Thread.isMainThread {
+            return try MainActor.assumeIsolated(body)
+        }
+        return try DispatchQueue.main.sync {
+            try MainActor.assumeIsolated(body)
+        }
+    }
+
+    @MainActor
+    private var currentURLOnMain: String {
+        webView.url?.absoluteString ?? lastURL
+    }
 }
 
 extension WebKitBrowserSession: @unchecked Sendable {}
 
 extension WebKitBrowserSession: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        if let url = webView.url?.absoluteString {
-            lastURL = url
+        runOnMain {
+            if let url = webView.url?.absoluteString {
+                lastURL = url
+            }
         }
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        onEvent?(.status("loaded"))
-        if navigation === pendingLoad {
-            pendingLoad = nil
-            return
-        }
-        if let url = webView.url?.absoluteString {
-            lastURL = url
-            onEvent?(.urlChanged(url))
+        runOnMain {
+            onEvent?(.status("loaded"))
+            if navigation === pendingLoad {
+                pendingLoad = nil
+                return
+            }
+            if let url = webView.url?.absoluteString {
+                lastURL = url
+                onEvent?(.urlChanged(url))
+            }
         }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        if navigation === pendingLoad {
-            pendingLoadError = error
-            pendingLoad = nil
+        runOnMain {
+            if navigation === pendingLoad {
+                pendingLoadError = error
+                pendingLoad = nil
+            }
+            onEvent?(.status("navigation failed: \(error)"))
         }
-        onEvent?(.status("navigation failed: \(error)"))
     }
 
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        if navigation === pendingLoad {
-            pendingLoadError = error
-            pendingLoad = nil
+    func webView(
+        _ webView: WKWebView,
+        didFailProvisionalNavigation navigation: WKNavigation!,
+        withError error: Error
+    ) {
+        runOnMain {
+            if navigation === pendingLoad {
+                pendingLoadError = error
+                pendingLoad = nil
+            }
+            onEvent?(.status("navigation failed: \(error)"))
         }
-        onEvent?(.status("navigation failed: \(error)"))
     }
 }
 
@@ -440,11 +516,13 @@ extension WebKitBrowserSession: WKUIDelegate {
         initiatedByFrame frame: WKFrameInfo,
         completionHandler: @escaping @MainActor @Sendable (String?) -> Void
     ) {
-        guard prompt == Self.nativeModelPrompt else {
-            completionHandler(nil)
-            return
+        runOnMain {
+            guard prompt == Self.nativeModelPrompt else {
+                completionHandler(nil)
+                return
+            }
+            completionHandler(handleNativeModelPrompt(defaultText))
         }
-        completionHandler(handleNativeModelPrompt(defaultText))
     }
 }
 

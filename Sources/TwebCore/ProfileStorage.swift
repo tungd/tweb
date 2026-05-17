@@ -1,10 +1,10 @@
 import Foundation
 
-public enum ProfileStorageKind: String, Codable, Equatable {
+public enum ProfileStorageKind: String, Codable, Equatable, Sendable {
     case webkitWebsiteDataStore
 }
 
-public struct PersistentProfile: Codable, Equatable {
+public struct PersistentProfile: Codable, Equatable, Sendable {
     public let name: String
     public let storeUUID: UUID
     public let storageKind: ProfileStorageKind
@@ -20,7 +20,7 @@ public struct PersistentProfile: Codable, Equatable {
     }
 }
 
-public enum SessionStorage: Equatable {
+public enum SessionStorage: Equatable, Sendable {
     case ephemeral
     case persistent(PersistentProfile)
 }

@@ -1,6 +1,6 @@
 import Foundation
 
-public enum ScreenshotCaptureMode: Equatable {
+public enum ScreenshotCaptureMode: Equatable, Sendable {
     case fullPage
 }
 

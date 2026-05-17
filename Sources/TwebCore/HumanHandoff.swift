@@ -1,10 +1,10 @@
 import Foundation
 
-public enum ReturnControlPlacement: Equatable {
+public enum ReturnControlPlacement: Equatable, Sendable {
     case nativeWindowChrome
 }
 
-public struct HandoffWindowState: Equatable {
+public struct HandoffWindowState: Equatable, Sendable {
     public let url: String
     public let containsLiveWebView: Bool
     public let returnControlPlacement: ReturnControlPlacement

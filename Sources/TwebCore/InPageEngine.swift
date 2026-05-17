@@ -225,7 +225,7 @@ public struct PageAgentBundle: Equatable {
     }
 }
 
-public enum FrameTarget: Equatable {
+public enum FrameTarget: Equatable, Sendable {
     case mainFrame
 }
 
