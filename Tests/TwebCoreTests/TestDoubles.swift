@@ -57,3 +57,15 @@ final class FakeInspectablePage: InspectablePage {
         html
     }
 }
+
+final class FakeSecretStore: SecretStore {
+    var tokens: [String: String] = [:]
+
+    func saveSecret(_ value: String, forKey key: String) throws {
+        tokens[key] = value
+    }
+
+    func readSecret(forKey key: String) throws -> String? {
+        tokens[key]
+    }
+}
