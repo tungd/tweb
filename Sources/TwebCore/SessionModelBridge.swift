@@ -50,6 +50,27 @@ public protocol HTTPClient {
     func send(_ request: HTTPRequest) throws -> HTTPResponse
 }
 
+public final class ModelRequestCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    public init() {}
+
+    @discardableResult
+    public func increment() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        value += 1
+        return value
+    }
+
+    public var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
+
 public enum ModelBridgeError: Error, Equatable, CustomStringConvertible {
     case unsupportedMethod(String)
     case rejectedPath(String)
@@ -75,10 +96,20 @@ public final class SessionModelBridge {
 
     private let configurationStore: ModelConfigurationStore
     private let httpClient: HTTPClient
+    private let requestCounter: ModelRequestCounter
 
-    public init(configurationStore: ModelConfigurationStore, httpClient: HTTPClient) {
+    public init(
+        configurationStore: ModelConfigurationStore,
+        httpClient: HTTPClient,
+        requestCounter: ModelRequestCounter = ModelRequestCounter()
+    ) {
         self.configurationStore = configurationStore
         self.httpClient = httpClient
+        self.requestCounter = requestCounter
+    }
+
+    public var modelRequestCount: Int {
+        requestCounter.count
     }
 
     public func handle(_ request: ModelSchemeRequest) throws -> ModelSchemeResponse {
@@ -92,6 +123,7 @@ public final class SessionModelBridge {
             throw ModelBridgeError.missingConfiguration
         }
 
+        requestCounter.increment()
         let upstream = try httpClient.send(HTTPRequest(
             url: try endpointURL(baseURL: configuration.baseURL, path: request.path),
             method: "POST",
@@ -99,7 +131,7 @@ public final class SessionModelBridge {
                 "Authorization": "Bearer \(configuration.apiToken)",
                 "Content-Type": "application/json"
             ],
-            body: request.body
+            body: try requestBody(request.body, configuration: configuration)
         ))
 
         return ModelSchemeResponse(
@@ -121,6 +153,59 @@ public final class SessionModelBridge {
             throw ModelBridgeError.invalidEndpoint
         }
         return url
+    }
+
+    private func requestBody(_ body: Data, configuration: ModelConfiguration) throws -> Data {
+        guard
+            !body.isEmpty,
+            var object = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        else {
+            return body
+        }
+
+        if object["model"] as? String == configuration.modelName, configuration.requestOptions.isEmpty {
+            return body
+        }
+
+        object = Self.merge(object, with: Self.jsonObject(from: configuration.requestOptions))
+        object["model"] = configuration.modelName
+        return try JSONSerialization.data(withJSONObject: object, options: [])
+    }
+
+    private static func merge(_ base: [String: Any], with overrides: [String: Any]) -> [String: Any] {
+        var result = base
+        for (key, value) in overrides {
+            if
+                let baseObject = result[key] as? [String: Any],
+                let overrideObject = value as? [String: Any]
+            {
+                result[key] = merge(baseObject, with: overrideObject)
+            } else {
+                result[key] = value
+            }
+        }
+        return result
+    }
+
+    private static func jsonObject(from values: [String: JSONValue]) -> [String: Any] {
+        values.mapValues(jsonObject(from:))
+    }
+
+    private static func jsonObject(from value: JSONValue) -> Any {
+        switch value {
+        case .null:
+            return NSNull()
+        case .bool(let value):
+            return value
+        case .number(let value):
+            return value
+        case .string(let value):
+            return value
+        case .array(let values):
+            return values.map(jsonObject(from:))
+        case .object(let object):
+            return jsonObject(from: object)
+        }
     }
 }
 

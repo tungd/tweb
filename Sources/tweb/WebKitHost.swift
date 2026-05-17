@@ -3,13 +3,17 @@ import Foundation
 import TwebCore
 @preconcurrency import WebKit
 
-final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, ScriptInjectingPage {
+final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, ScriptInjectingPage, PageAgentScriptPage {
     var onEvent: ((BrowserEvent) -> Void)?
 
     private let webView: WKWebView
+    private let modelBridge: SessionModelBridge?
     private var lastURL = "about:blank"
     private var handoffWindow: NSWindow?
-    private var installedEngineReady = false
+    private var pendingLoad: WKNavigation?
+    private var pendingLoadError: Error?
+    private var registeredEngineScript: String?
+    private static let nativeModelPrompt = "__tweb_model_request__"
 
     var currentURL: String {
         webView.url?.absoluteString ?? lastURL
@@ -18,18 +22,14 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
     init(storage: SessionStorage, modelBridge: SessionModelBridge?) {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = Self.websiteDataStore(for: storage)
-        if let modelBridge {
-            configuration.setURLSchemeHandler(
-                ModelSchemeHandler(modelBridge: modelBridge),
-                forURLScheme: "tweb-llm"
-            )
-        }
+        self.modelBridge = modelBridge
         self.webView = WKWebView(
             frame: CGRect(x: 0, y: 0, width: 1280, height: 900),
             configuration: configuration
         )
         super.init()
         webView.navigationDelegate = self
+        webView.uiDelegate = self
     }
 
     func startHidden() throws {
@@ -41,13 +41,29 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
     func load(_ url: String) throws {
         lastURL = url
         if url == "about:blank" {
-            webView.loadHTMLString("<!doctype html><title>about:blank</title>", baseURL: nil)
-        } else if let parsed = URL(string: url) {
-            webView.load(URLRequest(url: parsed))
+            onEvent?(.urlChanged(url))
+            return
+        }
+
+        pendingLoadError = nil
+        let navigation: WKNavigation?
+        if let parsed = URL(string: url) {
+            navigation = webView.load(URLRequest(url: parsed))
         } else {
             throw SessionRuntimeError.unusable("invalid launch URL: \(url)")
         }
-        onEvent?(.urlChanged(url))
+        if let navigation {
+            pendingLoad = navigation
+            if !spinUntil(timeout: 5, { pendingLoad == nil }) {
+                pendingLoad = nil
+            }
+            if let pendingLoadError {
+                self.pendingLoadError = nil
+                throw pendingLoadError
+            }
+        }
+        lastURL = currentURL
+        onEvent?(.urlChanged(currentURL))
     }
 
     func close() {
@@ -58,7 +74,27 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
 
     func evaluateJavaScript(_ source: String) throws -> JSONValue {
         let box = WebKitResultBox<Any?>()
-        webView.evaluateJavaScript(source) { value, error in
+        webView.evaluateJavaScript(
+            """
+            (() => {
+              const render = (value) => {
+                if (value === undefined) {
+                  return "null";
+                }
+                try {
+                  const encoded = JSON.stringify(value);
+                  if (encoded !== undefined) {
+                    return encoded;
+                  }
+                } catch (_) {}
+                return JSON.stringify(String(value));
+              };
+              return render((
+            \(source)
+              ));
+            })()
+            """
+        ) { value, error in
             if let error {
                 box.result = .failure(error)
             } else {
@@ -66,6 +102,82 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
             }
         }
         spinUntil { box.result != nil }
+        let value = try box.result!.get()
+        if
+            let rendered = value as? String,
+            let data = rendered.data(using: .utf8),
+            let decoded = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+        {
+            return Self.jsonValue(from: decoded)
+        }
+        return Self.jsonValue(from: value)
+    }
+
+    func callAsyncJavaScript(_ source: String, arguments: [String: String]) throws -> JSONValue {
+        if Thread.isMainThread {
+            return try callAsyncJavaScriptOnMain(source, arguments: arguments, timeout: nil)
+        }
+        return try callAsyncJavaScriptOffMain(source, arguments: arguments, timeout: nil)
+    }
+
+    private func callAsyncJavaScriptOnMain(
+        _ source: String,
+        arguments: [String: String],
+        timeout: TimeInterval?
+    ) throws -> JSONValue {
+        let box = WebKitResultBox<Any?>()
+        webView.callAsyncJavaScript(
+            source,
+            arguments: arguments,
+            in: nil,
+            in: .page
+        ) { result in
+            switch result {
+            case .success(let value):
+                box.result = .success(value)
+            case .failure(let error):
+                box.result = .failure(error)
+            }
+        }
+        guard spinUntil(timeout: timeout, { box.result != nil }) else {
+            throw SessionRuntimeError.unusable("timed out evaluating JavaScript")
+        }
+        return try Self.jsonValue(from: box.result!.get())
+    }
+
+    private func callAsyncJavaScriptOffMain(
+        _ source: String,
+        arguments: [String: String],
+        timeout: TimeInterval?
+    ) throws -> JSONValue {
+        let box = WebKitResultBox<Any?>()
+        let semaphore = DispatchSemaphore(value: 0)
+
+        DispatchQueue.main.async { [self] in
+            webView.callAsyncJavaScript(
+                source,
+                arguments: arguments,
+                in: nil,
+                in: .page
+            ) { result in
+                switch result {
+                case .success(let value):
+                    box.result = .success(value)
+                case .failure(let error):
+                    box.result = .failure(error)
+                }
+                semaphore.signal()
+            }
+        }
+
+        if let timeout {
+            guard semaphore.wait(timeout: .now() + timeout) == .success else {
+                throw SessionRuntimeError.unusable("timed out evaluating JavaScript")
+            }
+        } else {
+            semaphore.wait()
+        }
+
         return try Self.jsonValue(from: box.result!.get())
     }
 
@@ -106,20 +218,25 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
         )
-        webView.configuration.userContentController.addUserScript(userScript)
-        installedEngineReady = script.contains("__twebPageAgentReady")
+        if registeredEngineScript != script {
+            webView.configuration.userContentController.addUserScript(userScript)
+            registeredEngineScript = script
+            try reloadForRegisteredUserScript()
+        }
         onEvent?(.status("installed in-page engine in main frame"))
     }
 
     func evaluateReadinessProbe(_ source: String) throws -> Bool {
-        if source == "window.__twebPageAgentReady === true" {
-            return installedEngineReady
+        let box = WebKitResultBox<Any?>()
+        webView.evaluateJavaScript("Boolean(\(source))") { value, error in
+            if let error {
+                box.result = .failure(error)
+            } else {
+                box.result = .success(value)
+            }
         }
-        let value = try evaluateJavaScript(source)
-        if case .bool(let ready) = value {
-            return ready
-        }
-        return false
+        spinUntil { box.result != nil }
+        return (try box.result!.get() as? Bool) ?? false
     }
 
     func revealHandoffWindow() -> HandoffWindowState {
@@ -185,10 +302,94 @@ final class WebKitBrowserSession: NSObject, BrowserSession, InspectablePage, Scr
         }
     }
 
-    private func spinUntil(_ condition: () -> Bool) {
+    private func handleNativeModelPrompt(_ text: String?) -> String {
+        guard let modelBridge else {
+            return Self.nativeModelPromptError("model bridge is unavailable")
+        }
+        guard let text, let data = text.data(using: .utf8) else {
+            return Self.nativeModelPromptError("model bridge request was empty")
+        }
+
+        do {
+            let request = try JSONDecoder().decode(NativeModelPromptRequest.self, from: data)
+            guard let url = URL(string: request.url) else {
+                throw ModelBridgeError.invalidEndpoint
+            }
+            let response = try modelBridge.handle(ModelSchemeRequest(
+                method: request.method ?? "GET",
+                path: url.path,
+                body: Data((request.body ?? "").utf8)
+            ))
+            return Self.nativeModelPromptResponse(
+                status: response.statusCode,
+                body: String(data: response.body, encoding: .utf8) ?? ""
+            )
+        } catch {
+            return Self.nativeModelPromptError(String(describing: error))
+        }
+    }
+
+    private static func nativeModelPromptResponse(status: Int, body: String) -> String {
+        let payload: [String: Any] = [
+            "status": status,
+            "body": body,
+            "headers": [
+                "Content-Type": "application/json"
+            ]
+        ]
+        guard
+            let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
+            let rendered = String(data: data, encoding: .utf8)
+        else {
+            return #"{"status":599,"body":"{\"error\":{\"message\":\"failed to encode native model response\"}}","headers":{"Content-Type":"application/json"}}"#
+        }
+        return rendered
+    }
+
+    private static func nativeModelPromptError(_ message: String) -> String {
+        let bodyObject: [String: Any] = [
+            "error": [
+                "message": message
+            ]
+        ]
+        let bodyData = try? JSONSerialization.data(withJSONObject: bodyObject, options: [])
+        let body = bodyData.flatMap { String(data: $0, encoding: .utf8) }
+            ?? #"{"error":{"message":"native model bridge failed"}}"#
+        return nativeModelPromptResponse(status: 599, body: body)
+    }
+
+    private func reloadForRegisteredUserScript() throws {
+        pendingLoadError = nil
+        let navigation: WKNavigation?
+        if webView.url == nil || currentURL == "about:blank" {
+            navigation = webView.loadHTMLString("<!doctype html><title>about:blank</title>", baseURL: nil)
+        } else {
+            navigation = webView.reload()
+        }
+
+        guard let navigation else {
+            return
+        }
+        pendingLoad = navigation
+        if !spinUntil(timeout: 10, { pendingLoad == nil }) {
+            pendingLoad = nil
+        }
+        if let pendingLoadError {
+            self.pendingLoadError = nil
+            throw pendingLoadError
+        }
+    }
+
+    @discardableResult
+    private func spinUntil(timeout: TimeInterval? = nil, _ condition: () -> Bool) -> Bool {
+        let deadline = timeout.map { Date(timeIntervalSinceNow: $0) }
         while !condition() {
+            if let deadline, Date() >= deadline {
+                return false
+            }
             RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
         }
+        return true
     }
 }
 
@@ -198,16 +399,52 @@ extension WebKitBrowserSession: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         if let url = webView.url?.absoluteString {
             lastURL = url
-            onEvent?(.urlChanged(url))
         }
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         onEvent?(.status("loaded"))
+        if navigation === pendingLoad {
+            pendingLoad = nil
+            return
+        }
+        if let url = webView.url?.absoluteString {
+            lastURL = url
+            onEvent?(.urlChanged(url))
+        }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        if navigation === pendingLoad {
+            pendingLoadError = error
+            pendingLoad = nil
+        }
         onEvent?(.status("navigation failed: \(error)"))
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if navigation === pendingLoad {
+            pendingLoadError = error
+            pendingLoad = nil
+        }
+        onEvent?(.status("navigation failed: \(error)"))
+    }
+}
+
+extension WebKitBrowserSession: WKUIDelegate {
+    @MainActor
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptTextInputPanelWithPrompt prompt: String,
+        defaultText: String?,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping @MainActor @Sendable (String?) -> Void
+    ) {
+        guard prompt == Self.nativeModelPrompt else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(handleNativeModelPrompt(defaultText))
     }
 }
 
@@ -222,39 +459,10 @@ final class WebKitHandoffController: HandoffController {
     func returnControl() throws {}
 }
 
-private final class ModelSchemeHandler: NSObject, WKURLSchemeHandler {
-    private let modelBridge: SessionModelBridge
-
-    init(modelBridge: SessionModelBridge) {
-        self.modelBridge = modelBridge
-    }
-
-    func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
-        do {
-            let request = urlSchemeTask.request
-            guard let url = request.url else {
-                throw ModelBridgeError.invalidEndpoint
-            }
-            let response = try modelBridge.handle(ModelSchemeRequest(
-                method: request.httpMethod ?? "GET",
-                path: url.path,
-                body: request.httpBody ?? Data()
-            ))
-            let urlResponse = HTTPURLResponse(
-                url: url,
-                statusCode: response.statusCode,
-                httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/json"]
-            )!
-            urlSchemeTask.didReceive(urlResponse)
-            urlSchemeTask.didReceive(response.body)
-            urlSchemeTask.didFinish()
-        } catch {
-            urlSchemeTask.didFailWithError(error)
-        }
-    }
-
-    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
+private struct NativeModelPromptRequest: Decodable {
+    let method: String?
+    let url: String
+    let body: String?
 }
 
 private final class WebKitResultBox<Value>: @unchecked Sendable {
