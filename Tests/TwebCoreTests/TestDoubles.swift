@@ -13,16 +13,24 @@ final class FakeBrowserSession: BrowserSession {
     var onEvent: ((BrowserEvent) -> Void)?
     private(set) var loadedURLs: [String] = []
     private(set) var closed = false
+    var startError: Error?
+    var loadError: Error?
 
     var currentURL: String {
         loadedURLs.last ?? "about:blank"
     }
 
     func startHidden() throws {
+        if let startError {
+            throw startError
+        }
         emitStatus("hidden session started")
     }
 
     func load(_ url: String) throws {
+        if let loadError {
+            throw loadError
+        }
         loadedURLs.append(url)
         onEvent?(.urlChanged(url))
     }
@@ -236,5 +244,17 @@ final class NavigatingTaskRunner: BrowserSubagentTaskRunner {
             ]
         )))
         return CompletedRunningTask()
+    }
+}
+
+final class FailingTaskRunner: BrowserSubagentTaskRunner {
+    let error: Error
+
+    init(error: Error) {
+        self.error = error
+    }
+
+    func startTask(_ request: TaskTurnRequest, events: TaskTurnEventSink) throws -> RunningTask {
+        throw error
     }
 }

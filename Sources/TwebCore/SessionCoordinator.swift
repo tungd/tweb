@@ -5,6 +5,17 @@ public enum SessionReceiveOutcome: Equatable {
     case exit
 }
 
+public enum SessionRuntimeError: Error, Equatable, CustomStringConvertible {
+    case unusable(String)
+
+    public var description: String {
+        switch self {
+        case .unusable(let message):
+            return "unusable session: \(message)"
+        }
+    }
+}
+
 public enum TaskLifecycleState: Equatable {
     case idle
     case running
@@ -68,15 +79,27 @@ public final class SessionCoordinator {
         guard !started else { return }
         started = true
         trace?.record(type: "session", message: "starting hidden session")
-        try browser.startHidden()
-        try browser.load(launchURL ?? "about:blank")
-        trace?.record(type: "ready", message: browser.currentURL)
-        output.write(.ready(url: browser.currentURL))
+        do {
+            try browser.startHidden()
+            try browser.load(launchURL ?? "about:blank")
+            trace?.record(type: "ready", message: browser.currentURL)
+            output.write(.ready(url: browser.currentURL))
+        } catch {
+            trace?.record(type: "fatal", message: "session startup failed: \(error)")
+            output.write(.fatal("session startup failed: \(error)"))
+            throw error
+        }
     }
 
     public func receiveLine(_ line: String) throws -> SessionReceiveOutcome {
         if line.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") {
-            let command = try SlashCommand.parse(line)
+            let command: SlashCommand
+            do {
+                command = try SlashCommand.parse(line)
+            } catch {
+                output.write(.error(String(describing: error)))
+                return .continueSession
+            }
             if command == .quit {
                 browser.close()
                 return .exit
@@ -128,10 +151,20 @@ public final class SessionCoordinator {
         lifecycleState = .running
         queuedSteering = []
         turnMemory = [taskText]
-        let handle = try taskRunner.startTask(
-            TaskTurnRequest(text: taskText, currentURL: browser.currentURL),
-            events: self
-        )
+        let handle: RunningTask
+        do {
+            handle = try taskRunner.startTask(
+                TaskTurnRequest(text: taskText, currentURL: browser.currentURL),
+                events: self
+            )
+        } catch {
+            lifecycleState = .idle
+            queuedSteering = []
+            turnMemory = []
+            trace?.record(type: "error", message: "task failed: \(error)")
+            output.write(.error("task failed: \(error)"))
+            return .continueSession
+        }
         if lifecycleState != .idle {
             activeTask = handle
         }
