@@ -173,3 +173,13 @@ final class FakeEngineReinstaller: EngineReinstaller {
         }
     }
 }
+
+final class FakeManualProfileSession: ManualProfileSession {
+    var openedProfiles: [PersistentProfile] = []
+    var visibility: [SessionVisibility] = []
+
+    func open(profile: PersistentProfile, visibility: SessionVisibility) throws {
+        openedProfiles.append(profile)
+        self.visibility.append(visibility)
+    }
+}

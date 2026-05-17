@@ -8,8 +8,16 @@ struct CLIArguments {
         raw.contains("--setup")
     }
 
+    var isManual: Bool {
+        raw.contains("--manual")
+    }
+
     var skipsModelRequirement: Bool {
-        raw.contains("--no-model-required")
+        raw.contains("--no-model-required") || isManual
+    }
+
+    var profileName: String? {
+        value(after: "--profile")
     }
 
     var launchURL: String? {
@@ -19,7 +27,7 @@ struct CLIArguments {
                 skipNext = false
                 continue
             }
-            if ["--base-url", "--model", "--api-token"].contains(argument) {
+            if ["--base-url", "--model", "--api-token", "--profile"].contains(argument) {
                 skipNext = true
                 continue
             }
@@ -127,6 +135,19 @@ final class ControlledInPageTaskEngine: InPageTaskEngine {
     }
 }
 
+final class ControlledManualProfileSession: ManualProfileSession {
+    private let output: ProtocolOutput
+
+    init(output: ProtocolOutput) {
+        self.output = output
+    }
+
+    func open(profile: PersistentProfile, visibility: SessionVisibility) throws {
+        output.write(.ready(url: "profile:\(profile.name)"))
+        output.write(.result("manual profile session visible: \(profile.name) \(profile.storeUUID.uuidString)"))
+    }
+}
+
 let arguments = CLIArguments(raw: Array(CommandLine.arguments.dropFirst()))
 let output = StandardProtocolOutput()
 
@@ -152,6 +173,21 @@ if arguments.isSetup {
     }
 }
 
+let profileRegistry = ProfileRegistry()
+
+if arguments.isManual {
+    do {
+        try ManualMode(
+            registry: profileRegistry,
+            session: ControlledManualProfileSession(output: output)
+        ).run(profileName: arguments.profileName)
+        exit(0)
+    } catch {
+        output.write(.fatal(String(describing: error)))
+        exit(1)
+    }
+}
+
 if !arguments.skipsModelRequirement {
     do {
         let ready = try ModelConfigurationGate(
@@ -165,6 +201,20 @@ if !arguments.skipsModelRequirement {
         output.write(.fatal(String(describing: error)))
         exit(1)
     }
+}
+
+do {
+    let storage = try ProfileSelector(registry: profileRegistry)
+        .storage(forProfileName: arguments.profileName)
+    switch storage {
+    case .ephemeral:
+        output.write(.update("session-state: ephemeral"))
+    case .persistent(let profile):
+        output.write(.update("profile: \(profile.name) \(profile.storeUUID.uuidString)"))
+    }
+} catch {
+    output.write(.fatal(String(describing: error)))
+    exit(1)
 }
 
 let browser = ControlledBrowserSession()
