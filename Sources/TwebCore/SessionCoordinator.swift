@@ -23,6 +23,7 @@ public final class SessionCoordinator {
     private let slashCommandHandler: SlashCommandHandler?
     private let trace: TraceStore?
     private let taskRunner: BrowserSubagentTaskRunner?
+    private let engineReinstaller: EngineReinstaller?
     private var started = false
     private var activeTask: RunningTask?
     private var lifecycleState: TaskLifecycleState = .idle
@@ -37,18 +38,24 @@ public final class SessionCoordinator {
         )
     }
 
+    public var usesNetworkIdleHeuristics: Bool {
+        false
+    }
+
     public init(
         browser: BrowserSession,
         output: ProtocolOutput,
         slashCommandHandler: SlashCommandHandler? = nil,
         trace: TraceStore? = nil,
-        taskRunner: BrowserSubagentTaskRunner? = nil
+        taskRunner: BrowserSubagentTaskRunner? = nil,
+        engineReinstaller: EngineReinstaller? = nil
     ) {
         self.browser = browser
         self.output = output
         self.slashCommandHandler = slashCommandHandler
         self.trace = trace
         self.taskRunner = taskRunner
+        self.engineReinstaller = engineReinstaller
         self.browser.onEvent = { [weak self] event in
             self?.handleBrowserEvent(event)
         }
@@ -137,6 +144,12 @@ public final class SessionCoordinator {
         case .urlChanged(let url):
             trace?.record(type: "url", message: url)
             output.write(.update("url: \(url)"))
+            do {
+                try engineReinstaller?.reinstall(afterTopLevelNavigationTo: url)
+            } catch {
+                trace?.record(type: "error", message: "engine reinstall failed: \(error)")
+                output.write(.error("engine reinstall failed: \(error)"))
+            }
         }
     }
 

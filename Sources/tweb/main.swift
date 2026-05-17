@@ -86,6 +86,16 @@ extension ControlledBrowserSession: InspectablePage {
     }
 }
 
+extension ControlledBrowserSession: ScriptInjectingPage {
+    func inject(script: String, into frame: FrameTarget) throws {
+        onEvent?(.status("installed in-page engine in main frame"))
+    }
+
+    func evaluateReadinessProbe(_ source: String) throws -> Bool {
+        source == "window.__twebPageAgentReady === true"
+    }
+}
+
 final class ControlledEchoTaskRunner: BrowserSubagentTaskRunner {
     func startTask(_ request: TaskTurnRequest, events: TaskTurnEventSink) throws -> RunningTask {
         events.handleTaskEvent(.result(TaskTurnResult(
@@ -165,6 +175,10 @@ let commandHandler = SlashCommandHandler(
     artifactWriter: LocalArtifactWriter(),
     output: output
 )
+let engineReinstaller = try? MainFrameEngineReinstaller(
+    page: browser,
+    bundle: PageAgentBundle.vendored()
+)
 let taskRunner: BrowserSubagentTaskRunner
 if arguments.skipsModelRequirement {
     taskRunner = ControlledEchoTaskRunner()
@@ -183,7 +197,8 @@ let coordinator = SessionCoordinator(
     output: output,
     slashCommandHandler: commandHandler,
     trace: trace,
-    taskRunner: taskRunner
+    taskRunner: taskRunner,
+    engineReinstaller: engineReinstaller
 )
 
 do {

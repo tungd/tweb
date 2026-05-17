@@ -161,3 +161,15 @@ final class RecordingRunningTask: RunningTask {
         interrupted = true
     }
 }
+
+final class FakeEngineReinstaller: EngineReinstaller {
+    var reinstalledURLs: [String] = []
+    var error: Error?
+
+    func reinstall(afterTopLevelNavigationTo url: String) throws {
+        reinstalledURLs.append(url)
+        if let error {
+            throw error
+        }
+    }
+}
