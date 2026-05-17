@@ -108,6 +108,10 @@ _Avoid_: required target, session identity
 Injected page-local agent code that performs page inspection and actions inside the **Active Page**.
 _Avoid_: product API
 
+**Alibaba PageAgent**:
+The specific upstream JavaScript in-page GUI agent from `alibaba/page-agent` / npm package `page-agent`, loaded by `tweb` from a pinned prebuilt CDN IIFE as the V0 **In-Page Engine**.
+_Avoid_: generic PageAgent placeholder, local shim
+
 **Main Frame**:
 The top-level document frame of the **Active Page**.
 _Avoid_: iframe
@@ -124,16 +128,16 @@ _Avoid_: parent-agent model
 A CLI flow for storing **Model Configuration** such as base URL, model name, and API token.
 _Avoid_: manual mode
 
-**Secret Store**:
-The platform-native storage location for sensitive **Model Configuration** values such as API tokens.
-_Avoid_: config file
-
 **Session Model Bridge**:
 A session-scoped native bridge that lets the **In-Page Engine** request model completions without receiving the real API token.
 _Avoid_: transparent request interception
 
+**Model Turn**:
+One proxied model request made by the **In-Page Engine** through the **Session Model Bridge** during an active **Task Turn**.
+_Avoid_: browser step, page action
+
 **Model Scheme**:
-The `tweb-llm://` custom URL scheme used by the **Session Model Bridge** for model requests only.
+The logical `tweb-llm://` endpoint namespace used by PageAgent's model client for **Session Model Bridge** requests only. In WebKit V0 this is transported through PageAgent `customFetch` and a native prompt bridge, not browser `fetch` to a custom scheme.
 _Avoid_: native capability bus
 
 **Session Bridge**:
@@ -208,6 +212,7 @@ _Avoid_: product UI
 - A **Debug Command** may expose primitive browser operations, but it is not the primary parent-agent interface
 - An **Agent Browser Session** uses a **Text Protocol** rather than structured JSON events
 - A **Browser Subagent** may use **Update Blocks** during a **Task Turn** when it is stuck or needs a decision from the parent **Agent**
+- While the **Native Host** proxies PageAgent model calls, long-running **Task Turns** emit periodic **Update Blocks** with the active **Model Turn** count
 - A **Needs Input Block** explicitly signals that the **Browser Subagent** is waiting for parent-agent input before continuing the current **Task Turn**
 - A **Ready Block** marks when an **Agent Browser Session** can accept the first **Task Turn**
 - A **Ready Block** means the browser is live and the **In-Page Engine** is installed, not that the page is network-idle
@@ -231,14 +236,14 @@ _Avoid_: product UI
 - **Human Handoff** ends only after **Return Control**
 - An **Agent Browser Session** normally runs as a **Hidden Session** and becomes visible only during **Human Handoff**
 - A **Launch URL** is optional and may default to `about:blank`
-- The initial **In-Page Engine** may use PageAgent, but PageAgent is not part of the external product contract
+- The initial **In-Page Engine** is **Alibaba PageAgent**, but Alibaba PageAgent is not part of the external product contract
 - MVP installs the **In-Page Engine** in the **Main Frame** only
 - The **In-Page Engine** performs page-local operations while the **Native Host** owns model calls and policy
 - The **Native Host** uses its own required **Model Configuration** rather than inheriting the parent **Agent** model by default
 - **Setup Mode** stores required **Model Configuration** before normal **Agent Browser Sessions** run
-- **Setup Mode** stores API tokens in the **Secret Store** and non-secret values in a config file
+- **Setup Mode** stores base URL, model name, and API token in a static config file so agent sessions can start without Keychain prompts
 - The **In-Page Engine** reaches the model through a **Session Model Bridge**, not by holding the real API token
-- The **Session Model Bridge** uses the **Model Scheme** and must not become a general native capability bus
+- The **Session Model Bridge** uses the **Model Scheme** namespace and must not become a general native capability bus
 - The **In-Page Engine** uses a **Session Bridge** for session events and control messages, separate from the **Model Scheme**
 - A normal **Task Turn** result includes **Compact Evidence**, while **Full Trace** is available through the **Trace Command**
 - MVP keeps **Full Trace** as an **In-Memory Trace** rather than writing traces to disk automatically
@@ -299,7 +304,7 @@ _Avoid_: product UI
 > **Domain expert:** "No. MVP preserves browser state, not **Semantic Session Memory**."
 
 > **Dev:** "Should V0 use OCaml/camlkit for the **Native Host**?"
-> **Domain expert:** "No. Use a **Swift Host** because WKWebView, Keychain, profiles, and native window control are first-class Swift/macOS concerns."
+> **Domain expert:** "No. Use a **Swift Host** because WKWebView, profiles, native window control, and the macOS event loop are first-class Swift/macOS concerns."
 
 > **Dev:** "Should V0 support macOS older than 14?"
 > **Domain expert:** "No. Use the **macOS 14 Floor** so **Profile Stores** can use WebKit's named persistent data store API."
@@ -338,7 +343,7 @@ _Avoid_: product UI
 > **Domain expert:** "No. It reveals the same **Hidden Session** so the human operates on the live browser state."
 
 > **Dev:** "Is PageAgent the product API?"
-> **Domain expert:** "No. PageAgent may be the initial **In-Page Engine**, but `tweb` exposes **Browser Subagent** task turns."
+> **Domain expert:** "No. **Alibaba PageAgent** is the initial **In-Page Engine**, but `tweb` exposes **Browser Subagent** task turns."
 
 > **Dev:** "Should the **In-Page Engine** run in iframes?"
 > **Domain expert:** "No. MVP installs the **In-Page Engine** in the **Main Frame** only."
@@ -353,16 +358,19 @@ _Avoid_: product UI
 > **Domain expert:** "Use **Setup Mode** to store base URL, model name, and API token for `tweb`."
 
 > **Dev:** "Should API tokens be stored in the config file?"
-> **Domain expert:** "No. Store API tokens in the platform **Secret Store**; store non-secret **Model Configuration** in a config file."
+> **Domain expert:** "Yes for V0. Agentic use needs non-interactive startup, so **Setup Mode** stores the API token with the rest of **Model Configuration** in `~/.config/tweb/model.json`."
 
 > **Dev:** "How should PageAgent call the model in V0?"
-> **Domain expert:** "Use a **Session Model Bridge** controlled by the **Native Host** so PageAgent can make OpenAI-compatible requests without seeing the real API token."
+> **Domain expert:** "Use a **Session Model Bridge** controlled by the **Native Host** so **Alibaba PageAgent** can make OpenAI-compatible requests without seeing the real API token."
+
+> **Dev:** "How should the parent agent know a long PageAgent task is still alive?"
+> **Domain expert:** "Emit periodic **Update Blocks** from the **Native Host** that report the active **Model Turn** count observed by the **Session Model Bridge**."
 
 > **Dev:** "Should the model bridge expose general native commands?"
-> **Domain expert:** "No. The **Model Scheme** is only for model requests; other native capabilities need a separate bridge."
+> **Domain expert:** "No. The **Model Scheme** namespace is only for model requests; other native capabilities need a separate bridge."
 
 > **Dev:** "Should model requests and session events use the same bridge?"
-> **Domain expert:** "No. Use the **Model Scheme** for model requests and a constrained **Session Bridge** for updates, results, needs-input, and traces."
+> **Domain expert:** "No. Use the **Session Model Bridge** for model requests and a constrained **Session Bridge** for updates, results, needs-input, and traces."
 
 > **Dev:** "Should normal results include the full session trace?"
 > **Domain expert:** "No. Include **Compact Evidence** in normal results and expose **Full Trace** through the **Trace Command**."

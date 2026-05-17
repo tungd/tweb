@@ -8,13 +8,13 @@ Type: AFK
 
 ## What to build
 
-Implement the **Session Model Bridge** using the `tweb-llm://` **Model Scheme**. The **In-Page Engine** should be able to make OpenAI-compatible chat completions requests through this scheme without receiving the real API token.
+Implement the **Session Model Bridge** using the `tweb-llm://` **Model Scheme** namespace. The **In-Page Engine** should be able to make OpenAI-compatible chat completions requests through this namespace without receiving the real API token.
 
-The **Native Host** should validate the request shape, read the real API token from the **Secret Store**, forward the request to the configured model endpoint, and return an OpenAI-compatible response. The **Model Scheme** must remain model-only and must not become a general native capability bus.
+The **Native Host** should validate the request shape, read the real API token from **Model Configuration**, forward the request to the configured model endpoint, and return an OpenAI-compatible response. The **Model Scheme** must remain model-only and must not become a general native capability bus.
 
 ## Acceptance criteria
 
-- [ ] The custom WebKit URL scheme accepts model requests at the expected chat completions path.
+- [ ] PageAgent model requests reach the native bridge at the expected chat completions path.
 - [ ] The bridge forwards OpenAI-compatible request bodies to the configured model endpoint.
 - [ ] The real API token is injected by the **Native Host**, not exposed to the page.
 - [ ] Non-model paths or unsupported methods are rejected.
@@ -30,5 +30,5 @@ The **Native Host** should validate the request shape, read the real API token f
 - Added a Session Model Bridge for `tweb-llm://` model requests at `/v1/chat/completions`.
 - The bridge validates method/path, rejects non-model paths, loads the real token from Native Host configuration, and forwards the original OpenAI-compatible body.
 - Native auth is injected as an upstream Authorization header; the page-supplied request body never receives the token.
-- Added the executable WKURLSchemeHandler wiring for the `tweb-llm` Model Scheme.
+- The executable WebKit path uses PageAgent `customFetch` and a native prompt bridge because WebKit rejects page `fetch` calls to a custom URL scheme.
 - Added a fakeable HTTP client boundary and tests for validation, auth forwarding, path rejection, method rejection, and response forwarding.

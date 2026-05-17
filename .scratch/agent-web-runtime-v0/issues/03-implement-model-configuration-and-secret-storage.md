@@ -1,5 +1,5 @@
 Status: done
-Title: Implement Model Configuration and Secret Storage
+Title: Implement Model Configuration
 Type: AFK
 
 ## Parent
@@ -8,17 +8,16 @@ Type: AFK
 
 ## What to build
 
-Add **Setup Mode** so `tweb` can store required **Model Configuration** before normal **Agent Browser Sessions** run. Non-secret configuration, including base URL and model name, should be stored locally. API tokens should be stored in the platform **Secret Store**.
+Add **Setup Mode** so `tweb` can store required **Model Configuration** before normal **Agent Browser Sessions** run. The base URL, model name, and API token are stored together in the static config file.
 
 Normal sessions should fail early with a `<fatal>` message when required model configuration is missing, except for modes that explicitly do not need model calls.
 
 ## Acceptance criteria
 
 - [ ] `tweb --setup` collects and stores base URL, model name, and API token.
-- [ ] Non-secret model configuration is stored outside the platform Secret Store.
-- [ ] API tokens are stored in the platform Secret Store.
+- [ ] Model configuration is stored in `~/.config/tweb/model.json`.
 - [ ] Normal model-backed sessions fail fast with `<fatal>` when required model configuration is missing.
-- [ ] Tests cover config read/write behavior using a fake secret backend.
+- [ ] Tests cover config read/write behavior without requiring a real API token.
 - [ ] Tests cover missing-config failure behavior without requiring a real API token.
 
 ## Blocked by
@@ -28,6 +27,6 @@ Normal sessions should fail early with a `<fatal>` message when required model c
 ## Comments
 
 - Added Setup Mode storage for model base URL, model name, and API token.
-- Non-secret model values are written to a local JSON config file; API tokens go through a fakeable Secret Store boundary with a Keychain-backed implementation for the CLI.
+- Model values are written to `~/.config/tweb/model.json`, including the API token, so agent sessions can start without interactive Keychain prompts.
 - Added a startup gate that emits `<fatal>` and refuses model-backed sessions when required configuration is missing.
-- Added tests for config read/write behavior with a fake Secret Store and for missing-config failure without a real API token.
+- Added tests for config read/write behavior and for missing-config failure without a real API token.

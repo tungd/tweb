@@ -9,11 +9,11 @@ The user wants `tweb` to provide an **Agent Web Runtime**: a task-scoped, hidden
 
 ## Solution
 
-Build a macOS 14+ Swift Package executable named `tweb` that hosts a WebKit-backed **Agent Browser Session**. The process starts from an optional **Launch URL**, installs an **In-Page Engine** based on PageAgent in the **Main Frame**, and communicates through a plain **Text Protocol**.
+Build a macOS 14+ Swift Package executable named `tweb` that hosts a WebKit-backed **Agent Browser Session**. The process starts from an optional **Launch URL**, installs an **In-Page Engine** based on Alibaba PageAgent (`alibaba/page-agent`, npm package `page-agent`) in the **Main Frame**, and communicates through a plain **Text Protocol**.
 
 The normal interface is high-level text task turns. Slash commands provide explicit escape hatches for trace inspection, JavaScript evaluation, screenshots, raw HTML artifact capture, human handoff, interruption, and quitting. The session is a **Hidden Session** by default and can reveal the same live browser state through a native **Handoff Window** when the parent agent invokes `/human`.
 
-The **Native Host** owns model configuration, secrets, profile storage, WebKit lifecycle, trace collection, and policy. PageAgent can be the initial **In-Page Engine**, but it is not the product API. PageAgent reaches the configured OpenAI-compatible model through a session-scoped `tweb-llm://` **Model Scheme**, implemented by the Native Host so the real API token never enters the page.
+The **Native Host** owns model configuration, secrets, profile storage, WebKit lifecycle, trace collection, and policy. Alibaba PageAgent is the initial **In-Page Engine**, but it is not the product API. PageAgent reaches the configured OpenAI-compatible model through a session-scoped `tweb-llm://` **Model Scheme** namespace and native bridge, implemented by the Native Host so the real API token never enters the page.
 
 ## User Stories
 
@@ -52,8 +52,8 @@ The **Native Host** owns model configuration, secrets, profile storage, WebKit l
 33. As a user, I want Persistent Profiles to map to WebKit Profile Stores, so that named profiles are isolated by WebKit storage rather than ad hoc cookie copying.
 34. As a user, I want Persistent Profiles to be arbitrary named web identities, so that one profile can span multiple domains in a realistic workflow.
 35. As a user, I want `tweb --setup` to store model configuration, so that normal sessions can run without prompting.
-36. As a user, I want API tokens stored in the platform Secret Store, so that secrets do not live in plaintext config files.
-37. As a user, I want non-secret model configuration stored locally, so that `tweb` can find the base URL and model name.
+36. As a user, I want API tokens stored in the static model config, so that agent sessions can start without interactive Keychain prompts.
+37. As a user, I want model configuration stored locally, so that `tweb` can find the base URL, model name, and API token.
 38. As a Browser Subagent, I want model calls routed through the Session Model Bridge, so that I can use PageAgent without seeing the real API token.
 39. As a Native Host, I want to expose the Model Scheme only for model requests, so that it does not become a general native capability bus.
 40. As a Native Host, I want session events on a constrained Session Bridge, so that updates, results, needs-input, and traces are separated from model traffic.
@@ -61,9 +61,9 @@ The **Native Host** owns model configuration, secrets, profile storage, WebKit l
 42. As a Native Host, I want Ready Block to mean the In-Page Engine is installed, so that readiness does not depend on fuzzy network-idle behavior.
 43. As a Browser Subagent, I want to own Page Readiness decisions, so that task-specific waiting happens inside the page-local loop.
 44. As a developer, I want V0 implemented as a Pure CLI Host, so that the first prototype validates the session protocol without app-bundle packaging.
-45. As a developer, I want V0 implemented with Swift, so that WebKit, Keychain, profile stores, windows, and event-loop concerns use native APIs.
+45. As a developer, I want V0 implemented with Swift, so that WebKit, profile stores, windows, and event-loop concerns use native APIs.
 46. As a developer, I want V0 to require macOS 14, so that named Persistent Profiles can use WebKit's UUID-backed Profile Stores.
-47. As a developer, I want PageAgent treated as the initial In-Page Engine rather than the product API, so that the external contract can survive PageAgent changes.
+47. As a developer, I want Alibaba PageAgent treated as the initial In-Page Engine rather than the product API, so that the external contract can survive PageAgent changes.
 48. As a developer, I want the In-Page Engine installed in the Main Frame only for MVP, so that iframe support does not block the first useful slice.
 49. As a developer, I want Engine Reinstall failures to be recoverable errors, so that the parent agent can decide whether to navigate, use `/human`, or quit.
 50. As a developer, I want missing model configuration to fail normal sessions early, so that the Browser Subagent does not start half-functional.
@@ -72,7 +72,7 @@ The **Native Host** owns model configuration, secrets, profile storage, WebKit l
 
 - Build V0 as a Swift Package executable with a Pure CLI Host.
 - Require macOS 14 for V0 because WebKit named persistent data stores are central to Persistent Profiles.
-- Use Swift for the Native Host because the core risk is WebKit integration, Keychain access, native windows, and the macOS run loop.
+- Use Swift for the Native Host because the core risk is WebKit integration, native windows, profile stores, and the macOS run loop.
 - Keep app-bundle packaging out of V0 unless Pure CLI hosting proves impossible.
 - Implement an Agent Browser Session that reads stdin and writes stdout while owning one live WKWebView-backed Hidden Session.
 - Treat the optional Launch URL as a first-turn optimization only; default startup is `about:blank`.
@@ -83,14 +83,14 @@ The **Native Host** owns model configuration, secrets, profile storage, WebKit l
 - Support one active Task Turn per session. Plain text during a running turn is Queued Steering. `/interrupt` explicitly stops the turn.
 - Preserve browser state across completed Task Turns, but reset Turn Memory after each turn.
 - Do not maintain Semantic Session Memory in MVP.
-- Use PageAgent as the initial In-Page Engine, but keep the `tweb` public contract independent from PageAgent.
-- Vendor the PageAgent bundle for V0 rather than requiring a live npm build step in the first implementation path.
+- Use Alibaba PageAgent (`alibaba/page-agent`, npm package `page-agent`) as the initial In-Page Engine, but keep the `tweb` public contract independent from PageAgent.
+- Load the reviewed prebuilt Alibaba PageAgent IIFE from a pinned CDN URL for V0 rather than requiring a live npm build step.
 - Install the In-Page Engine in the Main Frame only for MVP.
 - Automatically reinstall the In-Page Engine after top-level navigation.
 - Let the Browser Subagent decide Page Readiness instead of using Native Host network-idle heuristics.
-- Route model traffic through a Session Model Bridge using the `tweb-llm://` Model Scheme.
+- Route model traffic through a Session Model Bridge using the `tweb-llm://` Model Scheme namespace.
 - Keep the Model Scheme model-only. Use a separate constrained Session Bridge for updates, results, needs-input, and trace data.
-- Store model base URL and model name in local config. Store API tokens in the platform Secret Store.
+- Store model base URL, model name, and API token in `~/.config/tweb/model.json` for non-interactive agent startup.
 - Add Setup Mode for model configuration: base URL, model name, and API token.
 - Use OpenAI-compatible chat completions as the first model interface because PageAgent already expects that shape.
 - Default to Ephemeral Session State when no profile is selected.
@@ -116,11 +116,11 @@ Major modules to build:
 - Text Protocol parser/renderer that handles XML-style blocks and slash command dispatch.
 - WebSession module that owns WKWebView, Hidden Session lifecycle, launch navigation, URL/status update emission, Human Handoff visibility, Handoff Window, and Return Control.
 - Profile registry that maps Persistent Profile names to WebKit Profile Store UUIDs.
-- Config and Secret Store module that handles model configuration and macOS Keychain storage.
-- In-Page Engine installer that injects PageAgent, verifies Installed Engine readiness, and performs Engine Reinstall after navigation.
-- Session Model Bridge that handles `tweb-llm://` requests and forwards them to the configured model endpoint with the real API token.
+- Config module that handles static model configuration.
+- In-Page Engine installer that injects Alibaba PageAgent, verifies Installed Engine readiness, and performs Engine Reinstall after navigation.
+- Session Model Bridge that handles PageAgent `customFetch` requests for the `tweb-llm://` namespace and forwards them to the configured model endpoint with the real API token.
 - Session Bridge that accepts constrained messages from the In-Page Engine and turns them into protocol output or trace entries.
-- Task runner that starts PageAgent task execution, maps PageAgent completion to result blocks, handles needs-input, and resets Turn Memory per Task Turn.
+- Task runner that starts Alibaba PageAgent task execution, maps PageAgent completion to result blocks, handles needs-input, and resets Turn Memory per Task Turn.
 - Trace store that keeps in-memory trace data and renders `/trace` JSON.
 - Artifact writer that produces screenshot and HTML artifact files through system temp primitives or requested absolute paths.
 - Slash command handler for `/trace`, `/eval`, `/screenshot`, `/html`, `/human`, `/interrupt`, and `/quit`.
@@ -131,7 +131,7 @@ Major modules to build:
 - The Text Protocol parser/renderer should have focused unit tests for task input, slash commands, XML-style output blocks, ready/update/result/error/fatal rendering, and trace rendering.
 - The session coordinator should have state-machine tests for ready, running, queued steering, needs-input, interrupt, result, error, and quit behavior.
 - The profile registry should have tests for creating, looking up, and reusing profile-name to UUID mappings.
-- The config and Secret Store boundary should have tests using a fake secret backend, so tests do not depend on the real Keychain.
+- The config boundary should have tests for static read/write behavior and missing-field reporting.
 - The Session Model Bridge should have tests with fake OpenAI-compatible requests and responses, including auth forwarding, model name preservation, and rejection of non-model paths.
 - The slash command handler should have tests for `/trace`, `/eval`, `/screenshot`, `/html`, `/human`, `/interrupt`, and `/quit` dispatch behavior.
 - The artifact writer should have tests for absolute paths, relative names resolved through the system temporary directory, and leave-behind semantics.
@@ -159,19 +159,20 @@ Major modules to build:
 - Bundled local models through llama.cpp or MLX.
 - Provider-specific model adapters beyond OpenAI-compatible chat completions.
 - A general native capability bus exposed through the Model Scheme.
-- Full replacement of PageAgent internals.
+- Full replacement of Alibaba PageAgent internals.
 
 ## Further Notes
 
 - ADR-0001 records the macOS 14 requirement for profile storage.
 - ADR-0002 records the Swift Host decision for V0.
-- The first implementation slice should prove the end-to-end loop: launch `tweb`, create a hidden WKWebView, install a minimal in-page engine, emit Ready Block, accept one Task Turn, perform a model-backed PageAgent step through the Model Scheme, and return a Result Block.
-- PageAgent packaging is resolved for V0 as a vendored bundle.
+- ADR-0003 records the decision to use Alibaba PageAgent as the V0 In-Page Engine.
+- The first implementation slice should prove the end-to-end loop: launch `tweb`, create a hidden WKWebView, install a minimal in-page engine, emit Ready Block, accept one Task Turn, perform a model-backed PageAgent step through the Session Model Bridge, and return a Result Block.
+- PageAgent packaging is resolved for V0 as a Native Host fetched/cached pinned Alibaba PageAgent CDN IIFE plus a small `tweb` adapter.
 - The Pure CLI Host may still need AppKit initialization and a macOS run loop; that does not change the external CLI-first product contract.
 
 ## Comments
 
 - Implemented across issues 01-12 with focused TDD slices and small logical commits.
 - Added the Swift Package executable/library, Text Protocol, session lifecycle, inspection slash commands, setup/config storage, model bridge, vendored in-page engine, task turns, lifecycle semantics, navigation reinstall, profiles/manual mode, human handoff, smoke workflow, and normalized error paths.
-- Added the executable WebKit host path with WKWebView, `tweb-llm` WKURLSchemeHandler, UUID-backed WKWebsiteDataStore selection, WebKit inspection commands, and native Handoff Window wiring. The deterministic smoke workflow uses `--controlled`.
+- Added the executable WebKit host path with WKWebView, PageAgent `customFetch` native model bridge, UUID-backed WKWebsiteDataStore selection, WebKit inspection commands, and native Handoff Window wiring. The deterministic smoke workflow uses `--controlled`.
 - Verification is covered by issue-specific XCTest suites plus `scripts/smoke-v0.sh`.

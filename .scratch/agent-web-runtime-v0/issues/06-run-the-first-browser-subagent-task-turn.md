@@ -32,5 +32,5 @@ This slice should prove the core thesis end to end: parent agent delegates a hig
 - Added Task Turn request/result contracts with Compact Evidence rendering.
 - Added a Browser Subagent task runner interface and PageAgent task runner that routes model calls through the Session Model Bridge.
 - Updated the session coordinator so idle plain text starts a Task Turn and returns a `<result>` block.
-- Wired the CLI to run controlled no-model task turns for smoke workflows and configured model-backed PageAgent turns for normal sessions.
+- Wired the CLI to run controlled task turns for smoke workflows and configured model-backed PageAgent turns for normal sessions.
 - Added tests for plain-text task input, model bridge routing through the runner, result rendering, and browser-state continuity.
