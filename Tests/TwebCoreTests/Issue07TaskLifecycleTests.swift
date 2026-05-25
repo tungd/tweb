@@ -38,6 +38,24 @@ final class Issue07TaskLifecycleTests: XCTestCase {
         """)
     }
 
+    func testQuitInterruptsCurrentTaskAndEndsSession() throws {
+        let runner = ManualTaskRunner()
+        let browser = FakeBrowserSession()
+        let output = RecordingProtocolOutput()
+        let coordinator = SessionCoordinator(browser: browser, output: output, taskRunner: runner)
+        try coordinator.start(launchURL: nil)
+        _ = try coordinator.receiveLine("Keep working")
+
+        let outcome = try coordinator.receiveLine("/quit")
+
+        XCTAssertEqual(outcome, .exit)
+        XCTAssertTrue(runner.handle.interrupted)
+        XCTAssertTrue(browser.closed)
+        XCTAssertEqual(coordinator.debugState.lifecycleState, .idle)
+        XCTAssertEqual(coordinator.debugState.queuedSteering, [])
+        XCTAssertEqual(coordinator.debugState.turnMemoryCount, 0)
+    }
+
     func testNeedsInputPausesUntilParentProvidesSteering() throws {
         let runner = ManualTaskRunner()
         let output = RecordingProtocolOutput()

@@ -101,8 +101,7 @@ public final class SessionCoordinator {
                 return .continueSession
             }
             if command == .quit {
-                browser.close()
-                return .exit
+                return quitSession()
             }
             if command == .interrupt {
                 return interruptCurrentTask()
@@ -190,6 +189,17 @@ public final class SessionCoordinator {
                 output.write(.error("engine reinstall failed: \(error)"))
             }
         }
+    }
+
+    private func quitSession() -> SessionReceiveOutcome {
+        activeTask?.interrupt()
+        activeTask = nil
+        lifecycleState = .idle
+        queuedSteering = []
+        turnMemory = []
+        trace?.record(type: "quit", message: "session quit requested")
+        browser.close()
+        return .exit
     }
 
     private func interruptCurrentTask() -> SessionReceiveOutcome {
