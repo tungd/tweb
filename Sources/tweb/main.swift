@@ -185,6 +185,7 @@ final class StandardInputSessionDriver: @unchecked Sendable {
     private var inputClosed = false
     private var exitRequested = false
     private var exitCode = 0
+    private var pendingLinesCount = 0
 
     init(
         coordinator: SessionCoordinator,
@@ -200,6 +201,7 @@ final class StandardInputSessionDriver: @unchecked Sendable {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             while let line = readLine() {
                 guard let self, !self.isExitRequested else { break }
+                self.incrementPendingLines()
                 DispatchQueue.main.async { [weak self] in
                     self?.receive(line)
                 }
@@ -218,7 +220,26 @@ final class StandardInputSessionDriver: @unchecked Sendable {
         return currentExitCode
     }
 
+    private func incrementPendingLines() {
+        lock.lock()
+        pendingLinesCount += 1
+        lock.unlock()
+    }
+
+    private func decrementPendingLines() {
+        lock.lock()
+        pendingLinesCount = max(0, pendingLinesCount - 1)
+        lock.unlock()
+    }
+
+    private var hasPendingLines: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return pendingLinesCount > 0
+    }
+
     private func receive(_ line: String) {
+        defer { decrementPendingLines() }
         guard !isExitRequested else { return }
 
         do {
@@ -242,6 +263,7 @@ final class StandardInputSessionDriver: @unchecked Sendable {
         let closed = inputClosed
         lock.unlock()
         guard closed else { return false }
+        guard !hasPendingLines else { return false }
         return coordinator.debugState.lifecycleState != .running
     }
 
